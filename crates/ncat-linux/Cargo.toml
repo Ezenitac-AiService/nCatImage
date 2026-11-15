@@ -1,0 +1,12 @@
+[package]
+name = "ncat-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ncat-backend.workspace = true
+ncat-core.workspace = true
+ncat-protocol.workspace = true
+gtk.workspace = true

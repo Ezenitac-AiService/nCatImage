@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/ncat-core", "crates/ncat-protocol", "crates/ncat-media", "crates/ncat-worker", "crates/ncat-backend", "crates/ncat-linux"]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[workspace.dependencies]
+ncat-core = { path = "crates/ncat-core" }
+ncat-protocol = { path = "crates/ncat-protocol" }
+ncat-media = { path = "crates/ncat-media" }
+ncat-backend = { path = "crates/ncat-backend" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+zip = { version = "9.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tempfile = "3.27"
+rustix = { version = "1.1.6", features = ["fs", "process", "thread"] }
+async-channel = "2.5"
+gtk = { package = "gtk4", version = "0.11.5", default-features = false, features = ["v4_10"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev]
+debug = 0
