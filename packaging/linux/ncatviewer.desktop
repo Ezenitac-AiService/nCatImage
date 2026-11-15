@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=nCatViewer
+Comment=Local comic and image viewer
+Exec=ncat-linux %f
+Icon=ncatviewer
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=image/jpeg;image/png;image/bmp;image/webp;image/gif;application/zip;application/vnd.comicbook+zip;
