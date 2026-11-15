@@ -50,7 +50,7 @@ impl Diagnostics {
     pub fn incident(&mut self) {
         if self.write_snapshot().is_err() && !self.warned {
             self.warned = true;
-            eprintln!("nCatViewer: could not write diagnostic log (log directory unavailable)");
+            eprintln!("nCatImage: could not write diagnostic log (log directory unavailable)");
         }
     }
     fn write_snapshot(&mut self) -> io::Result<()> {

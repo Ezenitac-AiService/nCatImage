@@ -1,21 +1,27 @@
-# nCatViewer
+# nCatImage
 
 **가볍게 열고, 빠르게 넘기는 Rust 기반 로컬 코믹뷰어.**
 
 폴더와 ZIP/CBZ를 바로 열어 이미지를 감상하는 Linux용 뷰어입니다. 원본 파일을 변경하지 않으며, 클라우드 연결이나 감상 기록 저장 없이 동작합니다.
 
-> **v0.4.1 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. 지원 형식과 아래 제한 사항을 확인해 주세요.
+> **v0.4.2 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. 지원 형식과 아래 제한 사항을 확인해 주세요.
+
+### v0.4.2 변경 사항
+
+- 앱 이름을 저장소명과 동일한 **nCatImage**로 통일했습니다.
+- 창 제목·오류 메시지·앱 ID·아이콘/데스크톱 항목·AppImage 파일명과 내부 경로에 새 이름을 적용했습니다.
+- 기존 상단 UI, 백틱 토글, 전체화면 숨김, 클릭 후 키보드 입력, ↑/↓ 페이지 이동과 Esc 종료 동작은 유지합니다.
 
 ## 다운로드 및 실행
 
-[**Linux x86_64 AppImage 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.4.1)
+[**Linux x86_64 AppImage 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.4.2)
 
 GTK와 이미지 처리 worker를 포함한 **AppImage 파일 하나**로 배포합니다. Rust나 GTK 개발 패키지를 따로 설치할 필요가 없습니다.
 
 ```bash
-chmod +x nCatViewer-0.4.1-x86_64.AppImage
-./nCatViewer-0.4.1-x86_64.AppImage
-./nCatViewer-0.4.1-x86_64.AppImage /path/to/book.cbz
+chmod +x nCatImage-0.4.2-x86_64.AppImage
+./nCatImage-0.4.2-x86_64.AppImage
+./nCatImage-0.4.2-x86_64.AppImage /path/to/book.cbz
 ```
 
 - 대상: **Linux x86_64, glibc 2.39 이상**(Ubuntu 24.04 및 동급 이상 환경).
@@ -27,7 +33,7 @@ chmod +x nCatViewer-0.4.1-x86_64.AppImage
 FUSE 관련 오류가 나면 설치 없이 압축 해제 실행을 시도하세요:
 
 ```bash
-./nCatViewer-0.4.1-x86_64.AppImage --appimage-extract-and-run
+./nCatImage-0.4.2-x86_64.AppImage --appimage-extract-and-run
 ```
 
 다운로드 파일의 무결성은 릴리스에 함께 제공하는 `SHA256SUMS`로 확인할 수 있습니다:
@@ -101,4 +107,4 @@ AppImage 생성 방법과 필요한 추가 패키지는 [`packaging/linux/build-
 
 ## 개발 상태
 
-Linux x86_64부터 개발 중인 개인 프로젝트입니다. 정식 코덱 호환성·보안·성능 검증이 완료된 제품이 아니며, 다른 뷰어보다 가볍다는 비교 결과를 주장하지 않습니다. 코드 라이선스는 아직 미정입니다. 배포본에 포함된 외부 구성요소의 라이선스 고지는 AppImage 내부 `usr/share/doc/ncatviewer/`에 있습니다.
+Linux x86_64부터 개발 중인 개인 프로젝트입니다. 정식 코덱 호환성·보안·성능 검증이 완료된 제품이 아니며, 다른 뷰어보다 가볍다는 비교 결과를 주장하지 않습니다. 코드 라이선스는 아직 미정입니다. 배포본에 포함된 외부 구성요소의 라이선스 고지는 AppImage 내부 `usr/share/doc/ncatimage/`에 있습니다.

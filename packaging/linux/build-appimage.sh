@@ -34,7 +34,7 @@ if [[ ! -f "$runtime" ]]; then
 fi
 echo "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46  $runtime" | sha256sum --check
 cargo build --workspace --release --locked
-mkdir -p "$appdir/usr/share/glib-2.0/schemas" "$appdir/usr/lib" "$appdir/usr/share/doc/ncatviewer"
+mkdir -p "$appdir/usr/share/glib-2.0/schemas" "$appdir/usr/lib" "$appdir/usr/share/doc/ncatimage"
 cp /usr/share/glib-2.0/schemas/*.xml "$appdir/usr/share/glib-2.0/schemas/"
 glib-compile-schemas "$appdir/usr/share/glib-2.0/schemas"
 libdir=$(pkg-config --variable=libdir gdk-pixbuf-2.0)
@@ -45,29 +45,29 @@ cp -a "$libdir/gdk-pixbuf-2.0" "$appdir/usr/lib/"
     > "$appdir/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
 mkdir -p "$appdir/usr/share/icons"
 cp -a /usr/share/icons/Adwaita /usr/share/icons/hicolor "$appdir/usr/share/icons/"
-cp README.md "$appdir/usr/share/doc/ncatviewer/"
-cp packaging/linux/runtime-LICENSE "$appdir/usr/share/doc/ncatviewer/APPIMAGE-RUNTIME-LICENSE"
-python3 packaging/linux/collect-notices.py "$appdir/usr/share/doc/ncatviewer"
+cp README.md "$appdir/usr/share/doc/ncatimage/"
+cp packaging/linux/runtime-LICENSE "$appdir/usr/share/doc/ncatimage/APPIMAGE-RUNTIME-LICENSE"
+python3 packaging/linux/collect-notices.py "$appdir/usr/share/doc/ncatimage"
 {
-    printf 'nCatViewer %s\nBuild base: Ubuntu 24.04 x86_64\n' "$version"
+    printf 'nCatImage %s\nBuild base: Ubuntu 24.04 x86_64\n' "$version"
     rustc --version
     cargo --version
     printf 'GTK: '
     pkg-config --modversion gtk4
     dpkg-query -W -f='${Package} ${Version}\n'
-} > "$appdir/usr/share/doc/ncatviewer/BUILD-INFO.txt"
+} > "$appdir/usr/share/doc/ncatimage/BUILD-INFO.txt"
 chmod +x packaging/linux/AppRun
-rsvg-convert packaging/linux/ncatviewer.svg --output "$build/ncatviewer.png"
+rsvg-convert packaging/linux/ncatimage.svg --output "$build/ncatimage.png"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LDAI_OUTPUT="$root/dist/nCatViewer-$version-x86_64.AppImage"
+export LDAI_OUTPUT="$root/dist/nCatImage-$version-x86_64.AppImage"
 export LDAI_RUNTIME_FILE="$runtime"
 export ARCH=x86_64
 "$tool" --appdir "$appdir" \
     --executable target/release/ncat-linux --executable target/release/ncat-worker \
     --deploy-deps-only "$appdir/usr/lib" \
     --library "$(pkg-config --variable=libdir librsvg-2.0)/librsvg-2.so.2" \
-    --desktop-file packaging/linux/ncatviewer.desktop \
-    --icon-file "$build/ncatviewer.png" --custom-apprun packaging/linux/AppRun \
+    --desktop-file packaging/linux/ncatimage.desktop \
+    --icon-file "$build/ncatimage.png" --custom-apprun packaging/linux/AppRun \
     --output appimage
 cd "$root/dist"
-sha256sum "nCatViewer-$version-x86_64.AppImage" > SHA256SUMS
+sha256sum "nCatImage-$version-x86_64.AppImage" > SHA256SUMS

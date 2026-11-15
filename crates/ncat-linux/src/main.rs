@@ -198,7 +198,7 @@ impl Ui {
                 "분석 중".into()
             };
             self.window.set_title(Some(&format!(
-                "{} / {} · {} — nCatViewer",
+                "{} / {} · {} — nCatImage",
                 self.selected.get() + 1,
                 count,
                 name
@@ -362,7 +362,7 @@ impl Ui {
                 self.status.set_text(&code.to_string());
                 if self.smoke {
                     self.smoke_ok.set(false);
-                    eprintln!("nCatViewer: smoke failure: {code:?}");
+                    eprintln!("nCatImage: smoke failure: {code:?}");
                     self.window.close();
                 }
             }
@@ -427,14 +427,14 @@ fn build(
     {
         Ok(backend) => backend,
         Err(_) => {
-            eprintln!("nCatViewer: backend initialization failed");
+            eprintln!("nCatImage: backend initialization failed");
             app.quit();
             return;
         }
     };
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title(concat!("nCatViewer · v", env!("CARGO_PKG_VERSION")))
+        .title(concat!("nCatImage · v", env!("CARGO_PKG_VERSION")))
         .default_width(1000)
         .default_height(800)
         .build();
@@ -896,7 +896,7 @@ fn build(
 }
 
 fn main() -> glib::ExitCode {
-    std::panic::set_hook(Box::new(|_| eprintln!("nCatViewer: internal failure")));
+    std::panic::set_hook(Box::new(|_| eprintln!("nCatImage: internal failure")));
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
     let smoke_empty = first.as_ref().is_some_and(|value| value == "--smoke-empty");
@@ -916,7 +916,7 @@ fn main() -> glib::ExitCode {
     .map(PathBuf::from);
     let smoke_ok = Rc::new(Cell::new(false));
     let app = gtk::Application::builder()
-        .application_id("io.github.ncatviewer.Development")
+        .application_id("io.github.ncatimage.Development")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     {
