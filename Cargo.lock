@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-backend"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-channel",
  "ncat-core",
@@ -671,11 +671,11 @@ dependencies = [
 
 [[package]]
 name = "ncat-core"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "ncat-linux"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "gtk4",
  "ncat-backend",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-media"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "image",
  "ncat-core",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-protocol"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-worker"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "image",
  "ncat-backend",

@@ -9,8 +9,24 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+fn interface_shown(enabled: bool, fullscreen: bool) -> bool {
+    enabled && !fullscreen
+}
+
+fn page_step(key: gdk::Key) -> Option<bool> {
+    match key {
+        gdk::Key::space | gdk::Key::Page_Down | gdk::Key::Down | gdk::Key::KP_Down => Some(true),
+        gdk::Key::BackSpace | gdk::Key::Page_Up | gdk::Key::Up | gdk::Key::KP_Up => Some(false),
+        _ => None,
+    }
+}
+
 struct Ui {
     window: gtk::ApplicationWindow,
+    header: gtk::HeaderBar,
+    toolbar: gtk::Box,
+    interface_visible: Cell<bool>,
+    interface_input: Cell<bool>,
     picture: gtk::Picture,
     scroll: gtk::ScrolledWindow,
     status: gtk::Label,
@@ -35,6 +51,27 @@ struct Ui {
 }
 
 impl Ui {
+    fn focus_viewer(&self) {
+        self.interface_input.set(false);
+        self.picture.grab_focus();
+    }
+
+    fn update_interface(&self) {
+        let visible = interface_shown(self.interface_visible.get(), self.window.is_fullscreen());
+        if !visible {
+            self.focus_viewer();
+        }
+        self.header.set_visible(visible);
+        self.toolbar.set_visible(visible);
+    }
+
+    fn interface_has_input(&self) -> bool {
+        self.interface_input.get()
+            && gtk::prelude::GtkWindowExt::focus(&self.window).is_some_and(|focus| {
+                focus.is_ancestor(&self.toolbar) || focus.is_ancestor(&self.header)
+            })
+    }
+
     fn view(&self) -> View {
         let scale = f64::from(self.window.scale_factor());
         let w = self.scroll.width().max(320);
@@ -82,7 +119,7 @@ impl Ui {
             self.loading();
         }
         self.update_navigation();
-        self.picture.grab_focus();
+        self.focus_viewer();
     }
 
     fn cancel_reload(&self) {
@@ -133,7 +170,7 @@ impl Ui {
                 "첫 페이지입니다"
             });
         }
-        self.picture.grab_focus();
+        self.focus_viewer();
     }
 
     fn update_navigation(&self) {
@@ -397,7 +434,7 @@ fn build(
     };
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("nCatViewer · M1 개발판")
+        .title(concat!("nCatViewer · v", env!("CARGO_PKG_VERSION")))
         .default_width(1000)
         .default_height(800)
         .build();
@@ -413,7 +450,7 @@ fn build(
     header.pack_end(&fullscreen);
     window.set_titlebar(Some(&header));
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let picture = gtk::Picture::builder()
         .hexpand(true)
         .vexpand(true)
@@ -427,17 +464,18 @@ fn build(
         .child(&picture)
         .build();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
-    root.append(&scroll);
+    let toolbar = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    toolbar.set_margin_top(6);
+    toolbar.set_margin_bottom(8);
     let status = gtk::Label::new(Some(
-        "파일/폴더/ZIP을 열거나 드롭하세요 · ← → / Space / Ctrl+O · 개발판: 기록 저장 없음",
+        "파일/폴더/ZIP을 열거나 드롭하세요 · ↑ ↓ / Space · ` UI 토글 · Esc 종료",
     ));
     status.set_wrap(true);
     status.set_margin_start(12);
     status.set_margin_end(12);
-    root.append(&status);
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    footer.set_halign(gtk::Align::Center);
-    footer.set_margin_bottom(8);
+    toolbar.append(&status);
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    controls.set_halign(gtk::Align::Center);
     let previous = gtk::Button::with_label("이전");
     let next = gtk::Button::with_label("다음");
     let position = gtk::SpinButton::with_range(1.0, 1.0, 1.0);
@@ -456,12 +494,18 @@ fn build(
         larger.upcast_ref(),
         rotate.upcast_ref(),
     ] {
-        footer.append(widget);
+        controls.append(widget);
     }
-    root.append(&footer);
+    toolbar.append(&controls);
+    root.append(&toolbar);
+    root.append(&scroll);
     window.set_child(Some(&root));
     let ui = Rc::new(Ui {
         window,
+        header,
+        toolbar,
+        interface_visible: Cell::new(true),
+        interface_input: Cell::new(false),
         picture,
         scroll,
         status,
@@ -485,6 +529,43 @@ fn build(
         smoke_ok,
     });
     ui.update_navigation();
+    // Only an explicit pointer click opts controls into keyboard input. Merely
+    // showing/restoring a window or pressing Tab must not focus the page spin.
+    for widget in [
+        ui.header.upcast_ref::<gtk::Widget>(),
+        ui.toolbar.upcast_ref(),
+    ] {
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&ui);
+        click.connect_pressed(move |_, _, _, _| {
+            if let Some(ui) = weak.upgrade() {
+                ui.interface_input.set(true);
+            }
+        });
+        widget.add_controller(click);
+    }
+    {
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&ui);
+        click.connect_pressed(move |_, _, _, _| {
+            if let Some(ui) = weak.upgrade() {
+                ui.focus_viewer();
+            }
+        });
+        ui.scroll.add_controller(click);
+    }
+    {
+        let weak = Rc::downgrade(&ui);
+        ui.window.connect_fullscreened_notify(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.update_interface();
+            }
+        });
+    }
     {
         let weak = Rc::downgrade(&ui);
         open.connect_clicked(move |_| {
@@ -572,6 +653,7 @@ fn build(
         });
     }
     let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     {
         let weak = Rc::downgrade(&ui);
         keys.connect_key_pressed(move |_, key, _, modifiers| {
@@ -595,13 +677,36 @@ fn build(
                 }
                 return glib::Propagation::Stop;
             }
-            if key == gdk::Key::Escape && ui.window.is_fullscreen() {
-                ui.window.unfullscreen();
+            if key == gdk::Key::Escape {
+                ui.window.close();
                 return glib::Propagation::Stop;
             }
-            // Never hijack spin/text/native control navigation or Tab/Enter.
-            if !ui.picture.has_focus() {
+            if key == gdk::Key::grave {
+                if !ui.window.is_fullscreen() {
+                    ui.interface_visible.set(!ui.interface_visible.get());
+                    ui.update_interface();
+                }
+                return glib::Propagation::Stop;
+            }
+            // Explicitly clicked controls keep native text/spin/Tab behavior;
+            // Escape, F11 and the interface toggle remain window shortcuts.
+            if ui.interface_has_input() {
                 return glib::Propagation::Proceed;
+            }
+            if matches!(key, gdk::Key::Tab | gdk::Key::ISO_Left_Tab) {
+                return glib::Propagation::Stop;
+            }
+            if modifiers.intersects(
+                gdk::ModifierType::CONTROL_MASK
+                    | gdk::ModifierType::ALT_MASK
+                    | gdk::ModifierType::SUPER_MASK,
+            ) {
+                return glib::Propagation::Proceed;
+            }
+            ui.focus_viewer();
+            if let Some(forward) = page_step(key) {
+                ui.navigate(forward);
+                return glib::Propagation::Stop;
             }
             match key {
                 gdk::Key::Right | gdk::Key::Left => {
@@ -612,8 +717,6 @@ fn build(
                     };
                     ui.navigate(physical_next(direction, key == gdk::Key::Right));
                 }
-                gdk::Key::space | gdk::Key::Page_Down => ui.navigate(true),
-                gdk::Key::BackSpace | gdk::Key::Page_Up => ui.navigate(false),
                 gdk::Key::Home => ui.load(0),
                 gdk::Key::End => {
                     let len = ui.book.borrow().as_ref().map_or(0, |b| b.pages.len());
@@ -695,7 +798,7 @@ fn build(
                     ui.scroll.hadjustment().value(),
                     ui.scroll.vadjustment().value(),
                 ));
-                ui.picture.grab_focus();
+                ui.focus_viewer();
             }
         });
     }
@@ -765,7 +868,7 @@ fn build(
         }
     });
     ui.window.present();
-    ui.picture.grab_focus();
+    ui.focus_viewer();
     if let Some(path) = initial {
         let ui = ui.clone();
         glib::idle_add_local_once(move || ui.open(path));
@@ -834,5 +937,36 @@ fn main() -> glib::ExitCode {
         glib::ExitCode::FAILURE
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fullscreen_always_hides_interface() {
+        assert!(!interface_shown(true, true));
+        assert!(!interface_shown(false, true));
+    }
+
+    #[test]
+    fn windowed_interface_respects_toggle() {
+        assert!(interface_shown(true, false));
+        assert!(!interface_shown(false, false));
+    }
+
+    #[test]
+    fn vertical_keys_match_page_keys_independent_of_reading_direction() {
+        for key in [gdk::Key::Down, gdk::Key::KP_Down, gdk::Key::space] {
+            assert_eq!(page_step(key), page_step(gdk::Key::Page_Down));
+            assert_eq!(page_step(key), Some(true));
+        }
+        for key in [gdk::Key::Up, gdk::Key::KP_Up, gdk::Key::BackSpace] {
+            assert_eq!(page_step(key), page_step(gdk::Key::Page_Up));
+            assert_eq!(page_step(key), Some(false));
+        }
+        assert_eq!(page_step(gdk::Key::Left), None);
+        assert_eq!(page_step(gdk::Key::Escape), None);
     }
 }

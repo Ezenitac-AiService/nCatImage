@@ -4,18 +4,18 @@
 
 폴더와 ZIP/CBZ를 바로 열어 이미지를 감상하는 Linux용 뷰어입니다. 원본 파일을 변경하지 않으며, 클라우드 연결이나 감상 기록 저장 없이 동작합니다.
 
-> **v0.4.0 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. 지원 형식과 아래 제한 사항을 확인해 주세요.
+> **v0.4.1 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. 지원 형식과 아래 제한 사항을 확인해 주세요.
 
 ## 다운로드 및 실행
 
-[**Linux x86_64 AppImage 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.4.0)
+[**Linux x86_64 AppImage 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.4.1)
 
 GTK와 이미지 처리 worker를 포함한 **AppImage 파일 하나**로 배포합니다. Rust나 GTK 개발 패키지를 따로 설치할 필요가 없습니다.
 
 ```bash
-chmod +x nCatViewer-0.4.0-x86_64.AppImage
-./nCatViewer-0.4.0-x86_64.AppImage
-./nCatViewer-0.4.0-x86_64.AppImage /path/to/book.cbz
+chmod +x nCatViewer-0.4.1-x86_64.AppImage
+./nCatViewer-0.4.1-x86_64.AppImage
+./nCatViewer-0.4.1-x86_64.AppImage /path/to/book.cbz
 ```
 
 - 대상: **Linux x86_64, glibc 2.39 이상**(Ubuntu 24.04 및 동급 이상 환경).
@@ -27,7 +27,7 @@ chmod +x nCatViewer-0.4.0-x86_64.AppImage
 FUSE 관련 오류가 나면 설치 없이 압축 해제 실행을 시도하세요:
 
 ```bash
-./nCatViewer-0.4.0-x86_64.AppImage --appimage-extract-and-run
+./nCatViewer-0.4.1-x86_64.AppImage --appimage-extract-and-run
 ```
 
 다운로드 파일의 무결성은 릴리스에 함께 제공하는 `SHA256SUMS`로 확인할 수 있습니다:
@@ -54,18 +54,22 @@ RAR/CBR·7Z, 두 장 보기 UI, 이어보기, 썸네일, ICC 색관리, 애니�
 
 ## 단축키
 
+페이지 정보와 조작 UI는 **뷰어 상단**에 있습니다. 일반 창에서는 백틱(<kbd>&#96;</kbd>)으로 상단 UI 전체를 숨기거나 표시합니다. 전체화면에서는 항상 숨기며, `F11`로 돌아오면 이전 표시 설정을 복원합니다.
+
 | 동작 | 키 |
 |---|---|
 | 파일 / 폴더 열기 | `Ctrl+O` / `Ctrl+Shift+O` |
-| 다음 / 이전 페이지 | `Space`, `PageDown` / `Backspace`, `PageUp` |
+| 다음 / 이전 페이지 | `↓`, `Space`, `PageDown` / `↑`, `Backspace`, `PageUp` |
 | 읽기 방향에 따른 페이지 이동 | `←` / `→` |
 | 읽기 방향 전환 | `D` |
 | 확대 / 축소 / 맞춤 | `+` / `-` / `9` |
 | 회전 / 반대 회전 | `R` / `Shift+R` |
 | 다시 열기 | `F5` |
-| 전체 화면 / 종료 | `F11` / `Ctrl+Q` |
+| 상단 UI 표시 / 숨김 | 백틱(<kbd>&#96;</kbd>), 일반 창에서만 |
+| 전체 화면 전환 | `F11` |
+| 종료 | `Esc` / `Ctrl+Q` |
 
-입력 위젯에 포커스가 있으면 해당 위젯의 기본 키 동작을 우선합니다.
+페이지 번호 등 UI의 키보드 조작은 **상단 UI를 직접 클릭했을 때만** 활성화됩니다. 그 전에는 `Tab`으로 UI에 포커스가 옮겨가지 않으며, 페이지 단축키가 우선합니다. UI를 클릭한 뒤에는 입력 위젯의 기본 키 동작을 사용하고, 이미지 영역을 클릭하면 페이지 단축키 모드로 돌아갑니다. `↑`/`↓`는 좌우 읽기 방향과 관계없이 이전/다음 페이지로 이동합니다. `Esc`는 전체화면 해제가 아니라 **앱 종료**이며, UI 입력 중에도 적용됩니다.
 
 ## 소스 빌드
 
