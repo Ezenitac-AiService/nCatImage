@@ -1,0 +1,27 @@
+name: Linux
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: GTK build and headless smoke dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev pkg-config xvfb xauth dbus-x11 openbox xdotool python3-gi python3-pyatspi at-spi2-core fonts-dejavu-core
+      - name: Install pinned Rust
+        run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --release --locked
+      - name: Generated-file GTK smoke (not real desktop certification)
+        run: |
+          python3 tools/smoke-fixtures.py "$RUNNER_TEMP/ncat-fixtures"
+          GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a dbus-run-session -- target/release/ncat-linux --smoke-test "$RUNNER_TEMP/ncat-fixtures/sample.cbz"
+      - name: Isolated desktop and mock-network regression (not real server authentication)
+        run: |
+          GDK_BACKEND=x11 GTK_A11Y=atspi GTK_THEME=Adwaita GDK_SCALE=1 GSK_RENDERER=cairo \
+            xvfb-run -a -s '-screen 0 1280x1024x24' dbus-run-session -- \
+            env NCAT_PRIVATE_TEST_BUS=1 python3 tools/desktop-regression.py --image target/release/ncat-linux

@@ -1,7 +1,11 @@
 #![forbid(unsafe_code)]
 
+mod network;
+
 use gtk::{gdk, gio, glib, prelude::*};
-use ncat_backend::{Backend, Book, Event, FrameBytes, View, worker_path};
+use ncat_backend::{
+    Backend, Book, DropEvent, DropRejection, Event, FrameBytes, NetworkFailure, View, worker_path,
+};
 use ncat_core::{Direction, fit_size, physical_next};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -21,12 +25,24 @@ fn page_step(key: gdk::Key) -> Option<bool> {
     }
 }
 
+fn single_drop_file(files: &[gio::File]) -> Result<&gio::File, DropRejection> {
+    match files {
+        [] => Err(DropRejection::Empty),
+        [file] => Ok(file),
+        _ => Err(DropRejection::MultipleItems),
+    }
+}
+
 struct Ui {
     window: gtk::ApplicationWindow,
     header: gtk::HeaderBar,
     toolbar: gtk::Box,
     interface_visible: Cell<bool>,
     interface_input: Cell<bool>,
+    drop_generation: Cell<Option<u64>>,
+    network_request: Cell<u64>,
+    network_task: RefCell<Option<glib::JoinHandle<()>>>,
+    network_timer: RefCell<Option<glib::SourceId>>,
     picture: gtk::Picture,
     scroll: gtk::ScrolledWindow,
     status: gtk::Label,
@@ -108,6 +124,115 @@ impl Ui {
     }
 
     fn open(self: &Rc<Self>, path: PathBuf) {
+        self.open_file(gio::File::for_commandline_arg(path), false);
+    }
+
+    fn cancel_network(&self) {
+        let request = self.network_request.get();
+        self.network_request.set(request.wrapping_add(1));
+        if let Some(timer) = self.network_timer.borrow_mut().take() {
+            timer.remove();
+        }
+        if let Some(task) = self.network_task.borrow_mut().take() {
+            task.abort();
+            self.backend
+                .diagnose_drop(DropEvent::NetworkCancelled { request });
+        }
+    }
+
+    fn open_file(self: &Rc<Self>, file: gio::File, from_drop: bool) -> bool {
+        self.cancel_network();
+        let location = match network::classify(file) {
+            Ok(location) => location,
+            Err(reason) => {
+                self.backend.diagnose_drop(DropEvent::NetworkFailed {
+                    request: self.network_request.get(),
+                    reason,
+                });
+                if from_drop && reason == NetworkFailure::UnsupportedScheme {
+                    self.backend
+                        .diagnose_drop(DropEvent::Rejected(DropRejection::NonLocal));
+                }
+                self.status.set_text(network::message(reason));
+                return false;
+            }
+        };
+        let network::Location::Remote { file, protocol } = location else {
+            if let network::Location::Local(path) = location {
+                self.open_source(path, from_drop);
+            }
+            return true;
+        };
+        self.cancel_reload();
+        if let Some(timer) = self.loading_timer.borrow_mut().take() {
+            timer.remove();
+        }
+        if let Some(generation) = self.drop_generation.take() {
+            self.backend
+                .diagnose_drop(DropEvent::Superseded { generation });
+        }
+        self.backend.cancel();
+        let request = self.network_request.get();
+        self.backend
+            .diagnose_drop(DropEvent::NetworkResolving { request, protocol });
+        self.status
+            .set_text("네트워크 폴더 연결 중… 인증이 필요하면 파일 관리자에서 먼저 로그인하세요");
+        let parent = self.window.clone();
+        let weak = Rc::downgrade(self);
+        *self.network_task.borrow_mut() =
+            Some(glib::MainContext::default().spawn_local(async move {
+                let result = network::resolve(file, parent).await;
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                if ui.closing.get() || ui.network_request.get() != request {
+                    return;
+                }
+                ui.network_task.borrow_mut().take();
+                if let Some(timer) = ui.network_timer.borrow_mut().take() {
+                    timer.remove();
+                }
+                match result {
+                    Ok((path, bridge)) => {
+                        ui.backend
+                            .diagnose_drop(DropEvent::NetworkResolved { request, bridge });
+                        ui.open_source(path, true);
+                    }
+                    Err(reason) => {
+                        ui.backend
+                            .diagnose_drop(DropEvent::NetworkFailed { request, reason });
+                        ui.status.set_text(network::message(reason));
+                    }
+                }
+            }));
+        let weak = Rc::downgrade(self);
+        *self.network_timer.borrow_mut() = Some(glib::timeout_add_local_once(
+            Duration::from_secs(60),
+            move || {
+                if let Some(ui) = weak.upgrade()
+                    && ui.network_request.get() == request
+                {
+                    ui.network_timer.borrow_mut().take();
+                    ui.cancel_network();
+                    ui.backend.diagnose_drop(DropEvent::NetworkFailed {
+                        request,
+                        reason: NetworkFailure::Timeout,
+                    });
+                    ui.status
+                        .set_text(network::message(NetworkFailure::Timeout));
+                }
+            },
+        ));
+        self.focus_viewer();
+        true
+    }
+
+    fn open_source(self: &Rc<Self>, path: PathBuf, from_drop: bool) {
+        self.cancel_network();
+        if let Some(generation) = self.drop_generation.take() {
+            self.backend
+                .diagnose_drop(DropEvent::Superseded { generation });
+        }
         self.cancel_reload();
         self.book.borrow_mut().take();
         self.picture.set_paintable(gdk::Paintable::NONE);
@@ -115,8 +240,24 @@ impl Ui {
         self.zoom.set(1.0);
         self.quarter_turns.set(0);
         self.layout_picture();
-        if self.backend.open(path, self.view()).is_ok() {
-            self.loading();
+        match self.backend.open(path, self.view()) {
+            Ok(generation) => {
+                if from_drop {
+                    self.drop_generation.set(Some(generation));
+                    self.backend
+                        .diagnose_drop(DropEvent::OpenQueued { generation });
+                }
+                self.loading();
+            }
+            Err(code) => {
+                self.status.set_text(&code.to_string());
+                if from_drop {
+                    self.backend.diagnose_drop(DropEvent::OpenFailed {
+                        generation: self.backend.generation(),
+                        code,
+                    });
+                }
+            }
         }
         self.update_navigation();
         self.focus_viewer();
@@ -129,6 +270,7 @@ impl Ui {
     }
 
     fn load(self: &Rc<Self>, index: usize) {
+        self.cancel_network();
         self.cancel_reload();
         let book = self.book.borrow().clone();
         if let Some(book) = book {
@@ -272,26 +414,98 @@ impl Ui {
         let weak = Rc::downgrade(self);
         if folder {
             dialog.select_folder(Some(&self.window), gio::Cancellable::NONE, move |result| {
-                if let (Some(ui), Ok(file)) = (weak.upgrade(), result)
-                    && let Some(path) = file.path()
-                {
-                    ui.open(path);
+                if let (Some(ui), Ok(file)) = (weak.upgrade(), result) {
+                    ui.open_file(file, false);
                 }
             });
         } else {
             dialog.open(Some(&self.window), gio::Cancellable::NONE, move |result| {
-                if let (Some(ui), Ok(file)) = (weak.upgrade(), result)
-                    && let Some(path) = file.path()
-                {
-                    ui.open(path);
+                if let (Some(ui), Ok(file)) = (weak.upgrade(), result) {
+                    ui.open_file(file, false);
                 }
             });
         }
     }
 
+    fn network_dialog(self: &Rc<Self>) {
+        let dialog = gtk::Window::builder()
+            .title("네트워크 파일 또는 폴더 열기")
+            .transient_for(&self.window)
+            .modal(true)
+            .destroy_with_parent(true)
+            .build();
+        if let Some(app) = self.window.application() {
+            dialog.set_application(Some(&app));
+        }
+        let cancel = gtk::Button::with_label("취소");
+        let open = gtk::Button::with_label("열기");
+        dialog.set_default_widget(Some(&open));
+        let entry = gtk::Entry::builder()
+            .placeholder_text("smb://서버/공유/폴더 또는 ftp://… / sftp://…")
+            .input_purpose(gtk::InputPurpose::Url)
+            .activates_default(true)
+            .width_chars(56)
+            .build();
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.set_margin_top(12);
+        content.set_margin_bottom(12);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        content.append(&entry);
+        let hint = gtk::Label::new(Some(
+            "인증은 OS 연결 도구가 처리합니다. 비밀번호를 URL에 넣지 마세요. FTP는 암호화되지 않습니다.",
+        ));
+        hint.set_wrap(true);
+        hint.set_max_width_chars(56);
+        content.append(&hint);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.set_halign(gtk::Align::End);
+        actions.append(&cancel);
+        actions.append(&open);
+        content.append(&actions);
+        dialog.set_child(Some(&content));
+        let weak = Rc::downgrade(self);
+        let weak_dialog = dialog.downgrade();
+        open.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.open_file(gio::File::for_uri(entry.text().trim()), false);
+            }
+            if let Some(dialog) = weak_dialog.upgrade() {
+                dialog.close();
+            }
+        });
+        let weak_dialog = dialog.downgrade();
+        cancel.connect_clicked(move |_| {
+            if let Some(dialog) = weak_dialog.upgrade() {
+                dialog.close();
+            }
+        });
+        let keys = gtk::EventControllerKey::new();
+        let weak_dialog = dialog.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                if let Some(dialog) = weak_dialog.upgrade() {
+                    dialog.close();
+                }
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        dialog.add_controller(keys);
+        dialog.present();
+    }
+
     fn consume(self: &Rc<Self>, event: Event) {
         if self.closing.get() || event.generation() != self.backend.generation() {
             return;
+        }
+        if let Some(generation) = self.drop_generation.get()
+            && generation != event.generation()
+        {
+            self.drop_generation.set(None);
+            self.backend
+                .diagnose_drop(DropEvent::Superseded { generation });
         }
         match event {
             Event::Catalog { book, .. } => {
@@ -317,6 +531,10 @@ impl Ui {
                 );
                 // GBytes owns FrameBytes, so the reservation survives the GUI's local variables.
                 self.picture.set_paintable(Some(&texture));
+                if let Some(generation) = self.drop_generation.take() {
+                    self.backend
+                        .diagnose_drop(DropEvent::Displayed { generation });
+                }
                 self.original
                     .set((info.original_width, info.original_height));
                 self.layout_picture();
@@ -355,6 +573,10 @@ impl Ui {
                 }
             }
             Event::Error { code, .. } => {
+                if let Some(generation) = self.drop_generation.take() {
+                    self.backend
+                        .diagnose_drop(DropEvent::OpenFailed { generation, code });
+                }
                 if let Some(timer) = self.loading_timer.borrow_mut().take() {
                     timer.remove();
                 }
@@ -404,6 +626,7 @@ impl Ui {
         if self.closing.replace(true) {
             return;
         }
+        self.cancel_network();
         self.cancel_reload();
         if let Some(timer) = self.loading_timer.borrow_mut().take() {
             timer.remove();
@@ -441,8 +664,11 @@ fn build(
     let header = gtk::HeaderBar::new();
     let open = gtk::Button::with_label("파일 열기");
     let folder = gtk::Button::with_label("폴더");
+    let network = gtk::Button::with_label("네트워크");
+    network.set_tooltip_text(Some("SMB / FTP / SFTP 주소 열기 · Ctrl+L"));
     header.pack_start(&open);
     header.pack_start(&folder);
+    header.pack_start(&network);
     let direction = gtk::ToggleButton::with_label("우→좌");
     direction.set_tooltip_text(Some("좌우 방향키의 읽기 방향 · D"));
     header.pack_end(&direction);
@@ -506,6 +732,10 @@ fn build(
         toolbar,
         interface_visible: Cell::new(true),
         interface_input: Cell::new(false),
+        drop_generation: Cell::new(None),
+        network_request: Cell::new(0),
+        network_task: RefCell::new(None),
+        network_timer: RefCell::new(None),
         picture,
         scroll,
         status,
@@ -529,6 +759,14 @@ fn build(
         smoke_ok,
     });
     ui.update_navigation();
+    {
+        let weak = Rc::downgrade(&ui);
+        network.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.network_dialog();
+            }
+        });
+    }
     // Only an explicit pointer click opts controls into keyboard input. Merely
     // showing/restoring a window or pressing Tab must not focus the page spin.
     for widget in [
@@ -661,6 +899,10 @@ fn build(
                 return glib::Propagation::Proceed;
             };
             let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+            if ctrl && matches!(key, gdk::Key::l | gdk::Key::L) {
+                ui.network_dialog();
+                return glib::Propagation::Stop;
+            }
             if ctrl && matches!(key, gdk::Key::o | gdk::Key::O) {
                 ui.dialog(modifiers.contains(gdk::ModifierType::SHIFT_MASK));
                 return glib::Propagation::Stop;
@@ -816,23 +1058,94 @@ fn build(
     }
     ui.picture.add_controller(drag);
 
-    let drop = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
+    // Prefer the file-list representation so count/locality can be validated,
+    // while retaining GFile compatibility for sources offering a single file.
+    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    drop.set_types(&[gdk::FileList::static_type(), gio::File::static_type()]);
+    drop.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let weak = Rc::downgrade(&ui);
+        drop.connect_accept(move |_, offered| {
+            let formats = offered.formats().union_deserialize_types();
+            let compatible = formats.contains_type(gdk::FileList::static_type())
+                || formats.contains_type(gio::File::static_type());
+            if let Some(ui) = weak.upgrade() {
+                ui.backend.diagnose_drop(DropEvent::Accepted { compatible });
+            }
+            compatible
+        });
+    }
     {
         let weak = Rc::downgrade(&ui);
         drop.connect_drop(move |_, value, _, _| {
             let Some(ui) = weak.upgrade() else {
                 return false;
             };
-            if let Ok(file) = value.get::<gio::File>()
-                && let Some(path) = file.path()
-            {
-                ui.open(path);
-                return true;
+            let (files, file_list) = if let Ok(list) = value.get::<gdk::FileList>() {
+                (list.files(), true)
+            } else if let Ok(file) = value.get::<gio::File>() {
+                (vec![file], false)
+            } else {
+                ui.backend
+                    .diagnose_drop(DropEvent::Rejected(DropRejection::UnsupportedValue));
+                ui.status.set_text("지원하지 않는 드롭 형식입니다");
+                return false;
+            };
+            ui.backend.diagnose_drop(DropEvent::Received {
+                file_list,
+                items: files.len(),
+            });
+            match single_drop_file(&files) {
+                Ok(file) => ui.open_file(file.clone(), true),
+                Err(reason) => {
+                    ui.backend.diagnose_drop(DropEvent::Rejected(reason));
+                    ui.status.set_text(match reason {
+                        DropRejection::Empty => "드롭된 파일이 없습니다",
+                        DropRejection::MultipleItems => "파일 또는 폴더를 한 개씩 드롭하세요",
+                        DropRejection::NonLocal => "로컬 또는 SMB·FTP·SFTP 위치만 열 수 있습니다",
+                        DropRejection::UnsupportedValue => "지원하지 않는 드롭 형식입니다",
+                    });
+                    false
+                }
             }
-            false
         });
     }
     ui.window.add_controller(drop);
+    // Observe even unsupported offers, before data negotiation. Do not log
+    // motion events, URI strings, file names, paths or arbitrary MIME strings.
+    let drag_observer = gtk::DropControllerMotion::new();
+    drag_observer.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let weak = Rc::downgrade(&ui);
+        drag_observer.connect_enter(move |controller, _, _| {
+            if let Some(ui) = weak.upgrade()
+                && let Some(offered) = controller.drop()
+            {
+                let formats = offered.formats();
+                ui.backend.diagnose_drop(DropEvent::Entered {
+                    file_list: formats.contains_type(gdk::FileList::static_type()),
+                    file: formats.contains_type(gio::File::static_type()),
+                    uri_list: formats.contain_mime_type("text/uri-list"),
+                    portal: formats.contain_mime_type("application/vnd.portal.filetransfer")
+                        || formats.contain_mime_type("application/vnd.portal.files"),
+                    actions: offered.actions().bits(),
+                    wayland: ui.picture.display().type_().name().contains("Wayland"),
+                });
+            }
+        });
+    }
+    {
+        let weak = Rc::downgrade(&ui);
+        drag_observer.connect_leave(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.backend.diagnose_drop(DropEvent::Left);
+            }
+        });
+    }
+    ui.window.add_controller(drag_observer);
+    ui.backend.diagnose_drop(DropEvent::Ready {
+        wayland: ui.picture.display().type_().name().contains("Wayland"),
+    });
     {
         let weak = Rc::downgrade(&ui);
         ui.window.connect_close_request(move |_| {
@@ -943,6 +1256,50 @@ fn main() -> glib::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drop_accepts_one_local_file_or_folder_without_inspecting_the_filesystem() {
+        let file = gio::File::for_path("/not-read/book with spaces.cbz");
+        assert_eq!(
+            single_drop_file(&[file]).unwrap().path().unwrap(),
+            PathBuf::from("/not-read/book with spaces.cbz")
+        );
+        let folder = gio::File::for_uri("file:///not-read/%ED%8F%B4%EB%8D%94");
+        assert_eq!(
+            single_drop_file(&[folder]).unwrap().path().unwrap(),
+            PathBuf::from("/not-read/폴더")
+        );
+    }
+
+    #[test]
+    fn drop_rejects_empty_multiple_and_retains_remote_uris_for_resolution() {
+        assert_eq!(single_drop_file(&[]), Err(DropRejection::Empty));
+        let file = gio::File::for_path("/not-read/a.png");
+        assert_eq!(
+            single_drop_file(&[file.clone(), file]),
+            Err(DropRejection::MultipleItems)
+        );
+        let remote = gio::File::for_uri("smb://server/share/book.cbz");
+        assert_eq!(
+            single_drop_file(std::slice::from_ref(&remote))
+                .unwrap()
+                .uri(),
+            remote.uri()
+        );
+    }
+
+    #[test]
+    fn drop_preserves_non_utf8_local_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(b"/not-read/\xff.png".to_vec()));
+        assert_eq!(
+            single_drop_file(&[gio::File::for_path(&path)])
+                .unwrap()
+                .path()
+                .unwrap(),
+            path
+        );
+    }
 
     #[test]
     fn fullscreen_always_hides_interface() {

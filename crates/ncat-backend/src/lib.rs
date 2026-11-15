@@ -4,8 +4,10 @@ mod cache;
 mod diagnostics;
 mod options;
 use cache::{FrameCache, Key, Revision, Target};
+pub use diagnostics::{DropEvent, DropRejection, NetworkBridge, NetworkFailure, NetworkProtocol};
 pub use options::BackendOptions;
 use std::cell::Cell;
+use std::collections::VecDeque;
 
 use ncat_core::{Budget, DEFAULT_BUDGET, MIB, Permit};
 use ncat_protocol::{
@@ -117,6 +119,7 @@ struct Job {
 }
 struct Shared {
     pending: Mutex<Option<Job>>,
+    drop_diagnostics: Mutex<VecDeque<DropEvent>>,
     wake: Condvar,
     generation: AtomicU64,
     closing: AtomicBool,
@@ -244,6 +247,7 @@ impl Backend {
         let options = options.validate()?;
         let shared = Arc::new(Shared {
             pending: Mutex::new(None),
+            drop_diagnostics: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             generation: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -284,6 +288,29 @@ impl Backend {
     }
     pub fn generation(&self) -> u64 {
         self.shared.generation.load(Ordering::Acquire)
+    }
+    /// Invalidate work while the GUI asynchronously resolves a new source.
+    pub fn cancel(&self) {
+        let mut pending = self.shared.pending.lock().unwrap();
+        if !self.shared.closing.load(Ordering::Acquire) {
+            self.shared.generation.fetch_add(1, Ordering::AcqRel);
+            *pending = None;
+            self.shared.wake.notify_one();
+        }
+    }
+    /// Enqueue a bounded, typed diagnostic event. Disk I/O stays on the existing
+    /// coordinator; no paths, file names, MIME strings or GTK types are accepted.
+    pub fn diagnose_drop(&self, event: DropEvent) {
+        let _pending = self.shared.pending.lock().unwrap();
+        if self.shared.closing.load(Ordering::Acquire) {
+            return;
+        }
+        let mut queue = self.shared.drop_diagnostics.lock().unwrap();
+        if queue.len() == 32 {
+            queue.pop_front();
+        }
+        queue.push_back(event);
+        self.shared.wake.notify_one();
     }
     pub fn events(&self) -> async_channel::Receiver<Event> {
         self.events.clone()
@@ -957,9 +984,21 @@ impl Engine {
                 self.previous = None;
                 self.forward = true;
                 let permit = Arc::new(shared.budget.reserve(INDEX_BYTES).ok_or(ErrorCode::Limit)?);
-                let mut book =
+                let source = RawPath::new(&path);
+                let mut opened =
                     self.worker(shared)?
-                        .open(&RawPath::new(&path), shared, generation, permit)?;
+                        .open(&source, shared, generation, permit.clone());
+                // FUSE backends may finalize stat attributes on the first read.
+                // No catalog/frame has been published yet: retry a fresh open
+                // once, retaining all revision checks on the new snapshot.
+                if matches!(opened, Err(ErrorCode::Changed)) && current(shared, generation) {
+                    self.incident("open_revision_retry", shared);
+                    self.stop_worker();
+                    opened = self
+                        .worker(shared)?
+                        .open(&source, shared, generation, permit);
+                }
+                let mut book = opened?;
                 emit(
                     sender,
                     shared,
@@ -1086,11 +1125,17 @@ fn coordinator(
     enum Work {
         Foreground(Job),
         Prefetch(PrefetchPlan),
+        Diagnostics(VecDeque<DropEvent>),
     }
     loop {
         let work = {
             let mut pending = shared.pending.lock().unwrap();
             loop {
+                let mut diagnostics = shared.drop_diagnostics.lock().unwrap();
+                if !diagnostics.is_empty() {
+                    break Some(Work::Diagnostics(std::mem::take(&mut *diagnostics)));
+                }
+                drop(diagnostics);
                 if shared.closing.load(Ordering::Acquire) {
                     break None;
                 }
@@ -1107,6 +1152,14 @@ fn coordinator(
         };
         match work {
             None => break,
+            Some(Work::Diagnostics(events)) => {
+                for event in events {
+                    engine
+                        .diagnostics
+                        .record(format!("stage=drop event={event:?}"));
+                }
+                engine.diagnostics.incident();
+            }
             Some(Work::Prefetch(plan)) => engine.prefetch(plan, &shared),
             Some(Work::Foreground(job)) => {
                 prefetch = None;
@@ -1156,11 +1209,11 @@ pub fn worker_path() -> io::Result<PathBuf> {
 mod guard_tests {
     use super::*;
 
-    #[test]
-    fn only_identical_live_target_can_promote_background_work() {
+    fn test_shared() -> Arc<Shared> {
         let options = BackendOptions::default();
-        let shared = Shared {
+        Arc::new(Shared {
             pending: Mutex::new(None),
+            drop_diagnostics: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             generation: AtomicU64::new(1),
             closing: AtomicBool::new(false),
@@ -1169,7 +1222,42 @@ mod guard_tests {
             stats: Stats::default(),
             prefetch_enabled: AtomicBool::new(true),
             options,
+        })
+    }
+
+    #[test]
+    fn drop_diagnostics_are_bounded_and_do_not_submit_or_cancel_work() {
+        let shared = test_shared();
+        let (_, events) = async_channel::bounded(1);
+        let backend = Backend {
+            shared: shared.clone(),
+            events,
         };
+        for generation in 0..100 {
+            backend.diagnose_drop(DropEvent::OpenQueued { generation });
+        }
+        {
+            let queue = shared.drop_diagnostics.lock().unwrap();
+            assert_eq!(queue.len(), 32);
+            assert!(matches!(
+                queue.front(),
+                Some(DropEvent::OpenQueued { generation: 68 })
+            ));
+            assert!(matches!(
+                queue.back(),
+                Some(DropEvent::OpenQueued { generation: 99 })
+            ));
+        }
+        assert!(shared.pending.lock().unwrap().is_none());
+        assert_eq!(backend.generation(), 1);
+        backend.shutdown();
+        backend.diagnose_drop(DropEvent::Left);
+        assert_eq!(shared.drop_diagnostics.lock().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn only_identical_live_target_can_promote_background_work() {
+        let shared = test_shared();
         let book = Arc::new(Book {
             source: RawPath(vec![b'/']),
             title: String::new(),
@@ -1214,5 +1302,28 @@ mod guard_tests {
         shared.prefetch_enabled.store(true, Ordering::Release);
         shared.closing.store(true, Ordering::Release);
         assert!(!guard.allowed(&shared));
+    }
+
+    #[test]
+    fn cancel_invalidates_pending_work_without_shutting_down() {
+        let shared = test_shared();
+        let (_, events) = async_channel::bounded(1);
+        let backend = Backend {
+            shared: shared.clone(),
+            events,
+        };
+        let generation = backend
+            .open(PathBuf::from("/not-read/book.cbz"), View::default())
+            .unwrap();
+        assert!(shared.pending.lock().unwrap().is_some());
+        backend.cancel();
+        assert!(shared.pending.lock().unwrap().is_none());
+        assert!(backend.generation() > generation);
+        assert!(!shared.closing.load(Ordering::Acquire));
+        assert!(
+            backend
+                .open(PathBuf::from("/not-read/next.cbz"), View::default())
+                .is_ok()
+        );
     }
 }

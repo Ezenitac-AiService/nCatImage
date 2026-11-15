@@ -2,3 +2,6 @@
 *.profraw
 log/
 /dist/
+/*.AppImage
+__pycache__/
+*.pyc
