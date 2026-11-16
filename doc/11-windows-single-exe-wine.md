@@ -4,6 +4,8 @@
 
 **v0.5.2 공개 승인:** 사용자 요청으로 Windows 단일 EXE를 Linux와 같은 프리릴리스에 **UNTESTED 실험판**으로 포함한다. 실제 Windows 환경에서는 아직 테스트하지 않았다. 보호 우회·readiness 승격 없이 별도 opt-in release build를 사용하며 [배포 문서](10-distribution.md)를 따른다. 아래 “공개하지 않음/커밋하지 않음”은 승인 전 단계의 기록이다.
 
+**후속 native CI:** [43971418584](https://github.com/NyarCat/nCatImage/actions/runs/43971418584)에서 최초 Windows 자동 실행을 시도했으나 media 2개가 `private owner/DACL required`로 실패했다. GUI/보호 pipeline 검사는 도달하지 못했다. 따라서 정상 동작 검증은 여전히 미완료이며 UNTESTED/알려진 권한 오류로 공개한다. “아직 테스트하지 않음”은 이 최초 CI 시도 전 기록과 실제 실사용 검증 미완료를 구분해서 읽는다.
+
 ## 1. 최종 계약
 
 - 배포 파일과 실행 코드 파일은 `nCatImage.exe` 하나다. GTK/third-party DLL·추가 worker EXE를 동봉하거나 임시 폴더에 풀지 않는다.

@@ -4,6 +4,8 @@
 
 ## v0.5.2 공개 준비 — Windows UNTESTED 포함
 
+후속 CI 기록: 최초 native Windows CI [43971418584](https://github.com/NyarCat/nCatImage/actions/runs/43971418584)의 media 2개가 `private owner/DACL required`로 실패했다. native 자동 시험은 시도했으나 정상 작동 검증은 통과하지 못했고 GUI/pipeline 단계는 실행되지 않았다. 보호를 완화하지 않으며 릴리스 노트에 알려진 오류를 명시한다.
+
 2026-11-17 사용자 승인으로 버전을 0.5.2로 올리고 Linux AppImage와 Windows 단일 EXE 실험판을 release build에 포함한다. **실제 Windows 환경에서는 아직 테스트하지 않았다.** Windows 정식 readiness는 false다. 파일명·README·릴리스 노트·창 제목·동봉 경고문에 UNTESTED를 명시하며, native CI 정의/미래 결과와 이번 공개 당시 검증을 구분한다. 기존 Release는 유지한다.
 
 ## 2026-11-17 Windows W1/W2 및 native 기능 연결
