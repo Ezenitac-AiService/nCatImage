@@ -4,11 +4,18 @@
 
 폴더와 ZIP/CBZ를 바로 열어 이미지를 감상하는 Linux용 뷰어입니다. 로컬 파일과 OS가 연결하는 SMB·FTP·SFTP 네트워크 폴더를 읽을 수 있습니다. 원본 파일을 변경하지 않으며, 자동 원격 분석이나 감상 기록 저장 없이 동작합니다.
 
-> **v0.4.3 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. 지원 형식과 아래 제한 사항을 확인해 주세요.
+> **v0.5.0 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. 이번 배포는 Linux 전용이며 Windows/macOS는 포팅 미완료입니다.
 
 **이 프로젝트는 OpenCode 코딩 에이전트(Coding Agent)를 통한 AI 기반 개발 프로젝트입니다.** 설계·구현·테스트·문서에 AI가 생성하거나 수정한 내용이 포함되어 있습니다. 자동 검사 통과가 안전성·정확성·성능을 보장하는 것은 아니며, 실제 검증 범위와 남은 제한을 공개합니다.
 
-### v0.4.3 변경 사항
+### v0.5.0 변경 사항
+
+- GIF/AGIF·WebP·APNG 자동 재생을 추가했습니다. 폴더와 ZIP/CBZ 내부 이미지도 지원합니다.
+- 타이틀바에 프레임·재생 상태·배속을 표시하고, 이전(`,`)/다음(`.`)/재생·일시정지(`/`) 버튼과 0.25×~4× 속도 선택을 추가했습니다.
+- 공통 읽기/GUI 정책·GTK 화면·OS 서비스를 분리하고 OS별 패키징 파이프라인을 준비했습니다. Windows/macOS 앱 배포 완료를 뜻하지 않습니다.
+- Rust 회귀 80개와 GTK 재생/컨트롤 검사 8개를 확인했습니다. 전체 코덱·보안·성능 인증은 아닙니다.
+
+기존 0.4.3의 기능도 유지합니다:
 
 - SMB·FTP·SFTP URI를 KIOFuse 또는 GVfs/FUSE를 통해 연결합니다. 네트워크 버튼·`Ctrl+L`·드롭·대화상자·명령행에서 사용할 수 있습니다.
 - 연결 대기를 비동기로 처리하고 이전 요청 취소·오래된 결과 거부·60초 대기 제한을 추가했습니다. 비밀번호 포함 URI는 거부하며 인증은 OS 도구에 맡깁니다.
@@ -20,14 +27,14 @@
 
 ## 다운로드 및 실행
 
-[**Linux x86_64 AppImage 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.4.3)
+[**Linux x86_64 AppImage 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.5.0)
 
 GTK와 이미지 처리 worker를 포함한 **AppImage 파일 하나**로 배포합니다. Rust나 GTK 개발 패키지를 따로 설치할 필요가 없습니다.
 
 ```bash
-chmod +x nCatImage-0.4.3-x86_64.AppImage
-./nCatImage-0.4.3-x86_64.AppImage
-./nCatImage-0.4.3-x86_64.AppImage /path/to/book.cbz
+chmod +x nCatImage-0.5.0-x86_64.AppImage
+./nCatImage-0.5.0-x86_64.AppImage
+./nCatImage-0.5.0-x86_64.AppImage /path/to/book.cbz
 ```
 
 - 대상: **Linux x86_64, glibc 2.39 이상**(Ubuntu 24.04 및 동급 이상 환경).
@@ -39,7 +46,7 @@ chmod +x nCatImage-0.4.3-x86_64.AppImage
 FUSE 관련 오류가 나면 설치 없이 압축 해제 실행을 시도하세요:
 
 ```bash
-./nCatImage-0.4.3-x86_64.AppImage --appimage-extract-and-run
+./nCatImage-0.5.0-x86_64.AppImage --appimage-extract-and-run
 ```
 
 다운로드 파일의 무결성은 릴리스에 함께 제공하는 `SHA256SUMS`로 확인할 수 있습니다:
@@ -54,7 +61,7 @@ sha256sum -c SHA256SUMS
 - OS 연결 도구를 통한 SMB·FTP·SFTP 파일/폴더 열기
 - 자연 정렬, 이전/다음 페이지 및 페이지 번호 이동
 - JPEG, PNG, BMP, WebP, GIF 표시
-- **현재 소스(미릴리스): GIF/AGIF·애니메이션 WebP·APNG 자동 재생**, 폴더·ZIP/CBZ에서도 동일하게 동작
+- **GIF/AGIF·애니메이션 WebP·APNG 자동 재생**, 폴더·ZIP/CBZ에서도 동일하게 동작
 - EXIF 방향 적용, 임시 회전, 맞춤, 확대, 스크롤·드래그 패닝, 전체 화면
 - 좌우 읽기 방향 전환
 - 별도 worker 프로세스에서 이미지 처리, 오래된 요청 취소
@@ -64,7 +71,7 @@ sha256sum -c SHA256SUMS
 
 RAR/CBR·7Z, 두 장 보기 UI, 이어보기, 썸네일, ICC 색관리는 아직 지원하지 않습니다. 폴더는 하위 폴더를 탐색하지 않습니다.
 
-애니메이션은 worker가 프레임을 순차 디코딩하고 파일의 지연 시간·반복 횟수에 따라 재생합니다. 프레임 전체를 메모리에 적재하지 않으며, 페이지 이동·회전·확대·종료 시 이전 재생을 취소합니다. 프레임 지연은 원본 기준 10ms~60초, 한 재생 주기는 최대 10,000프레임으로 제한합니다. 기존 v0.4.3 다운로드에는 이 미릴리스 기능이 포함되지 않습니다.
+애니메이션은 worker가 프레임을 순차 디코딩하고 파일의 지연 시간·반복 횟수에 따라 재생합니다. 프레임 전체를 메모리에 적재하지 않으며, 페이지 이동·회전·확대·종료 시 이전 재생을 취소합니다. 프레임 지연은 원본 기준 10ms~60초, 한 재생 주기는 최대 10,000프레임으로 제한합니다. 이 기능은 v0.5.0부터 포함되며 과거 v0.4.3 배포본에는 없습니다.
 
 타이틀바에 **현재 프레임/전체 프레임·재생 상태·배속**을 표시합니다. 전체 수는 첫 반복이나 재생 종료 후 확인되며 그전에는 `?`로 표시합니다.
 
@@ -104,9 +111,9 @@ RAR/CBR·7Z, 두 장 보기 UI, 이어보기, 썸네일, ICC 색관리는 아직
 상단 **네트워크** 버튼이나 `Ctrl+L`에서 주소를 입력하거나, 파일 관리자에서 파일/폴더 **한 개**를 드롭하세요. 파일/폴더 열기 대화상자와 명령행의 네트워크 URI도 같은 연결 경로를 사용합니다.
 
 ```bash
-./nCatImage-0.4.3-x86_64.AppImage 'smb://server/share/comics/'
-./nCatImage-0.4.3-x86_64.AppImage 'ftp://server/comics/book.cbz'
-./nCatImage-0.4.3-x86_64.AppImage 'sftp://user@server/comics/'
+./nCatImage-0.5.0-x86_64.AppImage 'smb://server/share/comics/'
+./nCatImage-0.5.0-x86_64.AppImage 'ftp://server/comics/book.cbz'
+./nCatImage-0.5.0-x86_64.AppImage 'sftp://user@server/comics/'
 ```
 
 - **KDE:** 세션의 **KIOFuse**와 해당 프로토콜의 KIO worker를 사용해 로컬 접근 경로를 얻습니다. Debian/Ubuntu 계열은 `kio-fuse kio-extras`, Arch 계열은 `kio-fuse kio-extras` 패키지를 확인하세요.
@@ -149,7 +156,7 @@ AppImage 생성 방법과 필요한 추가 패키지는 [`packaging/linux/build-
 
 드롭 로그에는 단계·형식 지원 여부·X11/Wayland 구분·요청 세대·정제된 오류 코드만 남깁니다. 네트워크 연결도 `NetworkResolving` → `NetworkResolved` 또는 `NetworkFailed`/`NetworkCancelled`로 기록하며, 프로토콜 종류와 연결 도구만 구분합니다. 원본 경로·파일명·URI·서버·계정·비밀번호·이미지 내용은 기록하거나 외부 전송하지 않습니다. 사용자가 요청한 네트워크 읽기에는 해당 서버와 통신하며, 원격 분석 전송은 없습니다. 기록은 기존 coordinator에서 처리하므로 UI 스레드에서 디스크에 쓰지 않습니다. 대기 이벤트는 최대 32개, 로그는 최근 최대 8개이며, 저장 실패는 읽기를 중단하지 않습니다.
 
-드롭이 계속 안 되면 다운로드한 AppImage가 있는 폴더에서 `./nCatImage-0.4.3-x86_64.AppImage`를 실행한 뒤 파일/폴더 한 개를 드롭하고, `log/`의 최신 로그를 첨부해 주세요. `Ready`만 있으면 드래그가 앱까지 도착하지 않은 경우이며, `Entered`/`Accepted` 뒤에 `Received`가 없으면 형식 협상·전달 단계, `OpenQueued` 뒤 `OpenFailed`이면 열기/디코딩 단계부터 조사할 수 있습니다. 로그 저장 위치를 찾기 어렵다면 앱을 실행한 터미널의 `pwd` 기준으로 확인하세요.
+드롭이 계속 안 되면 다운로드한 AppImage가 있는 폴더에서 `./nCatImage-0.5.0-x86_64.AppImage`를 실행한 뒤 파일/폴더 한 개를 드롭하고, `log/`의 최신 로그를 첨부해 주세요. `Ready`만 있으면 드래그가 앱까지 도착하지 않은 경우이며, `Entered`/`Accepted` 뒤에 `Received`가 없으면 형식 협상·전달 단계, `OpenQueued` 뒤 `OpenFailed`이면 열기/디코딩 단계부터 조사할 수 있습니다. 로그 저장 위치를 찾기 어렵다면 앱을 실행한 터미널의 `pwd` 기준으로 확인하세요.
 
 [이슈 등록](https://github.com/NyarCat/nCatImage/issues) 시 배포판, X11/Wayland, 앱 버전, 재현 방법과 관련 로그를 첨부해 주세요. 개인 이미지나 인증 정보는 올리지 마세요.
 

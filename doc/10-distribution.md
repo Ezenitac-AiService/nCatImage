@@ -1,6 +1,8 @@
 # 10. OS별 빌드·패키징·릴리스 파이프라인
 
-2026-11-16 · 소스 버전 0.4.3 유지. 기존 v0.4.3 Release/태그/다운로드는 덮어쓰지 않는다.
+2026-11-16 · 소스 버전 0.5.0. 기존 v0.4.3 Release/태그/다운로드는 덮어쓰지 않는다.
+
+**v0.5.0 예외 승인:** 사용자가 Linux 우선 공개를 선택했다. 수동 Distribution packages 빌드의 Linux 성공 artifact를 검증한 뒤 GitHub CLI로 Linux AppImage·체크섬을 공개한다. 자동 태그 workflow의 전 OS 성공 조건을 끄지 않으며, Windows/macOS artifact는 native 준비 전 만들지 않는다. 릴리스 노트에 이 범위를 명시한다.
 
 ## 형식과 현재 상태
 

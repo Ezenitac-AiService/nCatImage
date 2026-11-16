@@ -2,7 +2,9 @@
 
 이 문서는 실제 반영한 작업을 기록한다. 계획·목표와 검증 범위는 [개발 문서](doc/README.md), 현재 제한은 [구현 상태](doc/08-implementation-status.md)를 따른다. OpenCode 코딩 에이전트를 통한 AI 기반 개발이며, AI 생성·수정 코드와 문서가 포함된다.
 
-## 미릴리스 — Windows/macOS 포팅 준비
+## 0.5.0 — 2026-11-16
+
+Linux x86_64 AppImage 우선 배포. Windows/macOS는 native 파일/worker 보호 미구현으로 차단되며 ZIP/DMG 배포본이 없다. 기존 v0.4.3 Release/태그는 유지한다.
 
 ### 애니메이션 재생
 
@@ -21,7 +23,7 @@
 - `ncat-presentation`에 툴킷 독립 읽기 명령·키 우선순위·페이지 이동·확대/회전·보기 크기·UI 표시 정책을 추출했다.
 - GTK frontend를 `ncat-gtk`로 옮기고 Linux 진입점은 네트워크 연결 서비스를 주입한다. KIOFuse/GVfs 구현은 `ncat-linux`에 남긴다.
 - 중복 파일 리비전과 private 파일·no-follow 출력·Linux worker 보호를 `ncat-platform`으로 분리했다. Unix 경로 인코딩은 protocol의 별도 모듈에 격리했다.
-- 공통 로직 OS별 CI 정의와 경계 테스트, [포팅 문서](doc/09-portability.md)를 추가했다. Windows/macOS 앱 구현/실행 검증 또는 새로운 릴리스는 아니다.
+- 공통 로직 OS별 CI 정의와 경계 테스트, [포팅 문서](doc/09-portability.md)를 추가했다. Windows/macOS 앱 구현/실행 검증 완료는 아니다.
 
 ## 0.4.3 — 2026-11-16
 
