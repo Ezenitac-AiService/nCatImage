@@ -33,6 +33,9 @@ if [[ ! -f "$runtime" ]]; then
         --output "$runtime"
 fi
 echo "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46  $runtime" | sha256sum --check
+# The offline notice collector enumerates dependencies for all target platforms.
+# A native cargo build alone does not populate that complete registry cache.
+cargo fetch --locked
 cargo build --workspace --release --locked
 mkdir -p "$appdir/usr/share/glib-2.0/schemas" "$appdir/usr/lib" "$appdir/usr/share/doc/ncatimage"
 cp /usr/share/glib-2.0/schemas/*.xml "$appdir/usr/share/glib-2.0/schemas/"

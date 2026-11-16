@@ -34,7 +34,7 @@ python3 tools/measure-smoke.py -- target/release/ncat-linux --smoke-navigation /
 Ubuntu 24.04 예시 의존성:
 
 ```bash
-sudo apt install xvfb xauth dbus-x11 openbox xdotool python3-gi python3-pyatspi at-spi2-core fonts-dejavu-core
+sudo apt install xvfb xauth x11-utils dbus-x11 openbox xdotool python3-gi python3-pyatspi at-spi2-core fonts-dejavu-core
 ```
 
 실제 사용자 세션 D-Bus에 가짜 KIOFuse 서비스를 등록하면 안 된다. **반드시 새 Xvfb와 `dbus-run-session`에서 실행**한다. 도구는 명시적 격리 플래그와 X11을 요구하고 이미 KIOFuse 이름이 점유되어 있으면 중단한다.

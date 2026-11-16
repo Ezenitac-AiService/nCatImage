@@ -55,3 +55,5 @@ python3 packaging/checksums.py dist
 Python 테스트는 OS gate·태그 일치·불완전 릴리스 거부·체크섬만 검증한다. Windows/macOS 패키지 실행 성공을 뜻하지 않는다. Linux AppImage 빌드는 기존 upstream 도구의 SHA256 pin을 유지하며 pin이 바뀌면 실패한다. 자동으로 검증을 끄거나 새 hash를 신뢰하지 않는다.
 
 원격 Actions 승인/사용량/runner 정책 또는 네트워크 제한으로 빌드가 차단되면 해당 상태를 그대로 보고한다. 이 문서의 파이프라인 정의를 세 OS 제품 배포 완료로 해석하지 않는다.
+
+첫 실행에서 공통 로직/배포 검사 CI는 Linux·Windows·macOS에서 모두 통과했다. Linux 패키징은 offline 고지 수집용 전체 의존성 cache 누락, desktop CI는 `xprop` 누락으로 실패해 `cargo fetch --locked`와 `x11-utils` 설치를 보완했다. Windows/macOS는 native 미구현 사전 검사에서 차단됐으며 배포본은 생성되지 않았다.
