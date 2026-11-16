@@ -223,7 +223,11 @@ impl Book {
                     }
                 }
                 pages.sort_by(|a, b| match (&a.key, &b.key) {
-                    (PageKey::File(a), PageKey::File(b)) => natural_cmp(&a.0, &b.0),
+                    (PageKey::File(a), PageKey::File(b)) => natural_cmp(
+                        &ncat_platform::path_sort_bytes(a),
+                        &ncat_platform::path_sort_bytes(b),
+                    )
+                    .then_with(|| a.0.cmp(&b.0)),
                     _ => unreachable!(),
                 });
                 self.selected = initial
@@ -516,6 +520,97 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Generated, trusted fixtures only: these test codec/platform compatibility,
+    // not the protected worker contract (which has a separate native suite).
+    #[test]
+    fn trusted_static_formats_archive_and_rotation() {
+        let root = tempfile::tempdir().unwrap();
+        let private = root.path().join("private");
+        ncat_platform::create_private_directory(&private).unwrap();
+        let output = private.join("pixels");
+        let _owner = ncat_platform::create_private_file(&output).unwrap();
+        let pixels = image::RgbaImage::from_pixel(12, 8, image::Rgba([220, 30, 60, 255]));
+        for (extension, format) in [
+            ("png", ImageFormat::Png),
+            ("jpg", ImageFormat::Jpeg),
+            ("bmp", ImageFormat::Bmp),
+            ("webp", ImageFormat::WebP),
+        ] {
+            let source = root.path().join(format!("한글 page.{extension}"));
+            image::DynamicImage::ImageRgba8(pixels.clone())
+                .to_rgb8()
+                .save_with_format(&source, format)
+                .unwrap();
+            let before = std::fs::read(&source).unwrap();
+            let book = Book::open(&source).unwrap();
+            let info = book
+                .decode(&book.pages[0].key, &output, 100, 100, 32 * 1024 * 1024, 1)
+                .unwrap();
+            assert_eq!((info.original_width, info.original_height), (8, 12));
+            assert!(info.valid());
+            assert_eq!(std::fs::metadata(&output).unwrap().len(), info.bytes);
+            assert_eq!(std::fs::read(&source).unwrap(), before);
+        }
+        let png = root.path().join("한글 page.png");
+        let archive_path = root.path().join("한글 book.cbz");
+        let mut archive = zip::ZipWriter::new(File::create(&archive_path).unwrap());
+        for name in ["page10.png", "page2.png"] {
+            archive
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(&std::fs::read(&png).unwrap()).unwrap();
+        }
+        archive.finish().unwrap();
+        let before = std::fs::read(&archive_path).unwrap();
+        let book = Book::open(&archive_path).unwrap();
+        assert_eq!(
+            book.pages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["page2.png", "page10.png"]
+        );
+        let info = book
+            .decode(&book.pages[0].key, &output, 100, 100, 32 * 1024 * 1024, 0)
+            .unwrap();
+        assert_eq!((info.width, info.height), (12, 8));
+        assert_eq!(std::fs::read(&archive_path).unwrap(), before);
+    }
+
+    #[test]
+    fn trusted_gif_advances_and_seeks() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("한글 animation.gif");
+        let mut encoder = image::codecs::gif::GifEncoder::new(File::create(&source).unwrap());
+        for color in [[255, 0, 0, 255], [0, 255, 0, 255]] {
+            encoder
+                .encode_frame(image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(4, 3, image::Rgba(color)),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(100, 1),
+                ))
+                .unwrap();
+        }
+        drop(encoder);
+        let private = root.path().join("private");
+        ncat_platform::create_private_directory(&private).unwrap();
+        let output = private.join("pixels");
+        let _owner = ncat_platform::create_private_file(&output).unwrap();
+        let book = Book::open(&source).unwrap();
+        let info = book
+            .decode(&book.pages[0].key, &output, 100, 100, 32 * 1024 * 1024, 0)
+            .unwrap();
+        assert_eq!(info.animation.unwrap().index, 0);
+        let first = std::fs::read(&output).unwrap();
+        let next = book.animation_next(&output).unwrap().unwrap();
+        assert_eq!(next.animation.unwrap().index, 1);
+        assert_ne!(first, std::fs::read(&output).unwrap());
+        let seek = book.animation_seek(&output, 0).unwrap().unwrap();
+        assert_eq!(seek.animation.unwrap().index, 0);
+        assert_eq!(first, std::fs::read(&output).unwrap());
+    }
     #[test]
     fn actual_read_budget_survives_seek() {
         let mut input = LimitedReader {
@@ -533,6 +628,7 @@ mod tests {
         assert_eq!(label(b"p\n1.png"), "p1.png");
         assert!(!label("a\u{202e}jpg".as_bytes()).contains('\u{202e}'));
     }
+    #[cfg(unix)]
     #[test]
     fn folder_natural_order_and_non_utf8_identity() {
         let dir = tempfile::tempdir().unwrap();

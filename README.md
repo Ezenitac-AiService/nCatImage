@@ -4,9 +4,15 @@
 
 폴더와 ZIP/CBZ를 바로 열어 이미지를 감상하는 Linux용 뷰어입니다. 로컬 파일과 OS가 연결하는 SMB·FTP·SFTP 네트워크 폴더를 읽을 수 있습니다. 원본 파일을 변경하지 않으며, 자동 원격 분석이나 감상 기록 저장 없이 동작합니다.
 
-> **v0.5.1 소스 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. Linux 전용이며 Windows/macOS는 포팅 미완료입니다.
+> **v0.5.2 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. Windows EXE는 **실제 Windows에서 아직 테스트하지 않은 UNTESTED 실험판**입니다. Windows/macOS 포팅은 미완료입니다.
 
 **이 프로젝트는 OpenCode 코딩 에이전트(Coding Agent)를 통한 AI 기반 개발 프로젝트입니다.** 설계·구현·테스트·문서에 AI가 생성하거나 수정한 내용이 포함되어 있습니다. 자동 검사 통과가 안전성·정확성·성능을 보장하는 것은 아니며, 실제 검증 범위와 남은 제한을 공개합니다.
+
+### v0.5.2 변경 사항
+
+- Windows x86_64 단일 EXE 실험판을 포함합니다. 정상적인 이미지 표시·보안·입력은 native Windows에서 검증하지 않았습니다.
+- Win32 뷰어/공통 backend·동일 EXE worker와 파일/Job 보호를 연결했습니다. Wine에서는 Job 제한 검증 실패로 이미지 디코딩을 거부하며 보호를 우회하지 않습니다.
+- Linux GTK 기능은 유지합니다. GUI/worker wire v4를 함께 배포하며 서로 다른 버전을 섞지 않습니다.
 
 ### v0.5.1 변경 사항
 
@@ -33,16 +39,16 @@
 
 ## 다운로드 및 실행
 
-[**Linux x86_64 AppImage 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.5.0)
+[**Linux AppImage / Windows UNTESTED 실험판 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.5.2)
 
-위 공개 Release는 v0.5.0입니다. v0.5.1 release 빌드는 [Distribution packages](https://github.com/NyarCat/nCatImage/actions/workflows/release.yml)의 `distribution-linux` artifact로 구분합니다. 빌드 결과 확인 후 프로젝트 루트 `nCatImage.AppImage`도 교체하며, 실행 중인 앱은 종료 후 다시 실행해야 합니다.
+공개 프리릴리스는 v0.5.2입니다. 실행 중인 앱은 파일을 교체한 뒤 종료·재실행해야 합니다. Windows는 `nCatImage-0.5.2-UNTESTED-windows-x86_64.exe`이며 경고문/고지 ZIP도 함께 제공합니다. **실제 Windows 미시험·미서명·기능 동등성 미완료**이며 정상 작동을 보장하지 않습니다.
 
 GTK와 이미지 처리 worker를 포함한 **AppImage 파일 하나**로 배포합니다. Rust나 GTK 개발 패키지를 따로 설치할 필요가 없습니다.
 
 ```bash
-chmod +x nCatImage-0.5.0-x86_64.AppImage
-./nCatImage-0.5.0-x86_64.AppImage
-./nCatImage-0.5.0-x86_64.AppImage /path/to/book.cbz
+chmod +x nCatImage-0.5.2-x86_64.AppImage
+./nCatImage-0.5.2-x86_64.AppImage
+./nCatImage-0.5.2-x86_64.AppImage /path/to/book.cbz
 ```
 
 - 대상: **Linux x86_64, glibc 2.39 이상**(Ubuntu 24.04 및 동급 이상 환경).
@@ -54,7 +60,7 @@ chmod +x nCatImage-0.5.0-x86_64.AppImage
 FUSE 관련 오류가 나면 설치 없이 압축 해제 실행을 시도하세요:
 
 ```bash
-./nCatImage-0.5.0-x86_64.AppImage --appimage-extract-and-run
+./nCatImage-0.5.1-x86_64.AppImage --appimage-extract-and-run
 ```
 
 다운로드 파일의 무결성은 릴리스에 함께 제공하는 `SHA256SUMS`로 확인할 수 있습니다:
@@ -135,9 +141,15 @@ v0.5.1에서는 **현재 프레임/전체 프레임·재생 상태·배속**을 
 
 ## 소스 빌드
 
+### Windows 단일 EXE 개발 상태
+
+Windows는 GTK DLL이나 worker EXE를 추출하지 않는 **단일 native EXE**로 개발합니다. [개발 상태·재현 방법](doc/11-windows-single-exe-wine.md)에 따라 파일 서비스·Job 보호·같은 EXE worker와 Win32 뷰어 기능을 연결했습니다. Wine에서는 Job 제한 readback이 실패해 보호된 디코딩을 거부하며, native Windows 이미지 표시·보안·입력 동등성은 아직 검증 전입니다. v0.5.2에는 사용자 승인으로 **UNTESTED 실험판**을 공개하며 정식 Windows readiness는 false입니다.
+
+### Linux
+
 현재 소스는 Windows/macOS 포팅 준비를 위해 **공통 읽기/GUI 정책 → GTK frontend → Linux 서비스**로 분리되어 있습니다. OS별 재사용 범위와 남은 구현은 [포팅 경계](doc/09-portability.md)를 참고하세요. Windows/macOS 앱 지원이 추가된 것은 아닙니다.
 
-OS별 배포 파이프라인은 [배포 문서](doc/10-distribution.md)를 따릅니다. Linux는 AppImage, Windows는 GTK/worker 포함 포터블 ZIP, macOS는 `.app` 포함 DMG를 목표로 합니다. **Windows/macOS 작업은 포팅 미완료 사전 검사에서 차단되며 아직 다운로드 가능한 배포본이 아닙니다.** 수동 빌드는 Actions artifact만 생성하고, 새 태그의 세 OS 검증이 모두 성공한 경우에만 검토용 초안 릴리스를 만듭니다.
+OS별 배포 파이프라인은 [배포 문서](doc/10-distribution.md)를 따릅니다. Linux는 AppImage, Windows는 native 단일 EXE, macOS는 `.app` 포함 DMG를 목표로 합니다. 기존 Windows GTK ZIP 경로는 비활성화했습니다. **Windows/macOS 제품 배포는 포팅 미완료 사전 검사에서 차단됩니다.** Windows 개발 artifact와 제품 배포는 구분합니다. 새 태그의 세 OS 검증이 모두 성공한 경우에만 자동 초안 릴리스를 만듭니다.
 
 저장소의 `rust-toolchain.toml`에 지정된 Rust와 GTK **4.10 이상** 개발 패키지가 필요합니다. Ubuntu 24.04에서는 다음과 같이 빌드합니다:
 

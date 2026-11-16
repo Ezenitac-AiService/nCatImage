@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MSYS2 UCRT64 native build. ZIP fallback: GTK DLLs + GUI + separate worker."""
 import os
+import json
 from pathlib import Path
 import re
 import shutil
@@ -17,6 +18,8 @@ def run(*args):
 
 
 def main():
+    if json.loads((ROOT / "packaging/targets.json").read_text())["windows"]["format"] != "portable.zip":
+        raise SystemExit("Legacy GTK ZIP packaging is disabled; the current Windows goal is native single EXE")
     run(sys.executable, str(ROOT / "packaging/preflight.py"), "windows")
     if sys.platform != "win32":
         raise SystemExit("Build on Windows in an MSYS2 UCRT64 environment")

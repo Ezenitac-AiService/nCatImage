@@ -8,9 +8,9 @@ v0.4.3 · 2026-11-16. 목표 계약과 현재 구현 차이는 [08](08-implement
 
 이유는 Linux native 입력·IME·접근성을 활용하면서 별도 웹 runtime·custom GPU engine을 처음부터 만들지 않기 위해서다. GTK가 가장 가볍다는 결론은 아직 없으며 07의 빈 창/페이지/반응성 목표로 실제 판정한다.
 
-초기에 하지 않을 것: 다중 OS GUI·C#/Swift 셸·범용 C ABI·async runtime·DI container·플러그인 시스템·DB·자체 renderer. GUI가 목표를 크게 초과하면 core/worker 경계를 유지한 채 더 단순한 frontend를 비교하는 별도 결정을 한다.
+초기 Linux 범위에서는 다중 OS GUI·C#/Swift 셸·범용 C ABI·async runtime·DI container·플러그인 시스템·DB·자체 renderer를 제외했다. 이후 사용자 요청으로 Windows native W0 bootstrap을 추가하며 범위는 11을 따른다. 불필요한 범용 계층은 도입하지 않는다.
 
-## 2. 코드 구조 — 포팅·배포 준비 후 10개 crate
+## 2. 코드 구조 — Windows W0 추가 후 11개 crate
 
 ```text
 Cargo.toml / Cargo.lock / rust-toolchain.toml
@@ -19,6 +19,7 @@ crates/
   ncat-presentation/ 툴킷 독립 GUI 명령·읽기 상태·보기/입력 정책
   ncat-gtk/        GTK 화면·입력 매핑·픽셀 표시·비동기 작업 수명
   ncat-desktop/    향후 Windows/macOS용 로컬 GTK 진입점 (native port 미완료)
+  ncat-windows/    단일 EXE Win32 bootstrap·Wine 검사 (뷰어/보호 미완료)
   ncat-platform/   Unix 파일 리비전/권한/open·Linux worker 보호
   ncat-protocol/   worker 요청/응답·버전·오류·상한 DTO
   ncat-backend/    세션·scheduler·IPC client·cache·설정/진단
@@ -31,6 +32,7 @@ tests/corpus/     재배포 가능한 경계 파일·hash·생성기
 기존 6개 crate에 presentation·GTK frontend·platform을 추출했다. 재사용 범위와 미구현 OS 기능은 [09](09-portability.md)를 따른다. 현재 회귀 입력은 worker 통합 테스트가 temp 디렉터리에 생성하고, 수동 GTK 입력은 `tools/smoke-fixtures.py`로 생성한다. `tests/corpus/`의 정식 corpus는 아직 없다. 아래의 prefetch/협력 취소/유휴 회수 등 전체 계약은 목표이며 [08](08-implementation-status.md)에 실제 차이를 기록한다.
 
 - core는 UI·codec·OS·Tokio 비의존, `forbid(unsafe_code)`다.
+- Windows 단일 EXE/Wine W0 범위는 [11](11-windows-single-exe-wine.md)을 따른다. 직접 Win32 호출은 native 셸의 `win32.rs`에만 격리하며 `deny(unsafe_op_in_unsafe_fn)`·handle/callback 수명 주석을 둔다. 공통 core/protocol/presentation/backend/media/worker의 unsafe 금지는 유지한다.
 - Linux GUI는 현재 `Backend / Event / View / FrameBytes`로 조정·표시를 연결한다. `Action / Snapshot / FrameLease` 명칭의 전체 목표 API가 구현된 것은 아니다. media parser를 UI에 링크해 직접 호출하지 않는다.
 - 읽기 입력/보기 정책은 presentation, 정렬·예산/spread는 core, scheduler/cache/worker는 backend, widgets·포커스·대화상자·texture와 요청/이벤트 수명 조정은 GTK frontend에 둔다. 완전한 toolkit-independent controller는 아직 아니다.
 - media의 native FFI는 안전 조건·스레드·allocator·해제 함수를 좁게 캡슐화한다. `Send/Sync`를 근거 없이 수동 구현하지 않는다.
@@ -47,6 +49,8 @@ tests/corpus/     재배포 가능한 경계 파일·hash·생성기
 - thread/future drop을 코덱 종료로 간주하지 않는다. 실제 종료/reap 확인 후 슬롯/예약을 반환한다. worker kill로 잃은 세션/요청을 전부 무효화한다.
 
 ## 4. 요청·큐·버전
+
+Windows W0 소스의 wire v4는 Unix bytes와 Windows UTF-16LE code units를 같은 host의 부모/worker 간 lossless하게 전달한다. invalid NUL/length/alignment는 Deserialize 단계에서 거부한다. worker 명령은 executable/arguments로 분리하며 같은 EXE 모드는 명시적 `--worker` 인자만 사용한다. 아직 Windows decoder가 연결되었다는 뜻은 아니다.
 
 v0.5.1 wire v3은 animation의 확인된 `total`(없으면 unknown)을 전달하고 `index < total <= MAX_ANIMATION_FRAMES`를 parent에서 검증한다. 번호 seek는 worker에서 한 프레임씩 합성/폐기하고 범위 초과 시 마지막 유효 프레임을 반환한다. 자동 재생은 애니메이션 툴바의 텍스트만 갱신하며 page spin/창 제목·이전/다음 버튼 sensitivity를 busy마다 갱신하지 않는다. 아래 wire v2 설명은 0.5.0 구현 이력이다.
 

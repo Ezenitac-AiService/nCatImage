@@ -17,6 +17,29 @@ def run(script, *args):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_untested_assets_and_notices_are_hashed_without_readiness_promotion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            names = ["nCatImage-test-UNTESTED-windows-x86_64.exe",
+                     "nCatImage-test-windows-NOTICES.zip",
+                     "nCatImage-test-windows-UNTESTED.txt"]
+            for name in names:
+                (root / name).write_bytes(b"experimental")
+            self.assertEqual(run("checksums.py", directory).returncode, 0)
+            text = (root / "SHA256SUMS").read_text()
+            for name in names:
+                self.assertIn(f"{hashlib.sha256(b'experimental').hexdigest()}  {name}\n", text)
+            self.assertEqual(run("preflight.py", "windows").returncode, 2)
+
+    def test_native_exe_is_supported_but_bare_bootstrap_is_not_a_release_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ["nCatImage-test.AppImage", "nCatImage-test-windows-x86_64.exe", "nCatImage-test.dmg", "nCatImage.exe"]:
+                (root / name).write_bytes(b"synthetic")
+            self.assertEqual(run("checksums.py", directory, "--require-all").returncode, 0)
+            text = (root / "SHA256SUMS").read_text()
+            self.assertIn("nCatImage-test-windows-x86_64.exe", text)
+            self.assertNotIn("  nCatImage.exe", text)
     def test_supported_linux_and_matching_version(self):
         version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
         self.assertEqual(run("preflight.py", "linux", "--tag", f"v{version}").returncode, 0)

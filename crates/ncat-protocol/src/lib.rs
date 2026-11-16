@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 mod path;
 pub use path::RawPath;
 
-pub const VERSION: u16 = 3;
+pub const VERSION: u16 = 4;
 pub const MAX_ANIMATION_FRAMES: u32 = 10_000;
 pub const MIN_FRAME_DELAY_MS: u32 = 10;
 pub const MAX_FRAME_DELAY_MS: u32 = 60_000;
@@ -305,6 +305,7 @@ mod tests {
         assert!(read_message::<Request>(&mut bytes.as_slice()).is_err());
     }
     #[test]
+    #[cfg(unix)]
     fn non_utf8_path_roundtrip() {
         let raw = RawPath(vec![b'/', 0xff, b'a']);
         let data = serde_json::to_vec(&raw).unwrap();

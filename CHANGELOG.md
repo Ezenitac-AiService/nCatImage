@@ -2,6 +2,14 @@
 
 이 문서는 실제 반영한 작업을 기록한다. 계획·목표와 검증 범위는 [개발 문서](doc/README.md), 현재 제한은 [구현 상태](doc/08-implementation-status.md)를 따른다. OpenCode 코딩 에이전트를 통한 AI 기반 개발이며, AI 생성·수정 코드와 문서가 포함된다.
 
+## 0.5.2 — 2026-11-17
+
+- **Windows x86_64 실험판 포함: 실제 Windows에서 테스트하지 않았다.** 정상적인 이미지 표시·보안·입력 동작을 보장하지 않으며 Wine에서는 Job 제한 검증 실패로 protected decode가 차단된다. 정식 readiness는 false다.
+- [개발 계획](doc/11-windows-single-exe-wine.md), GTK 비의존 Win32 뷰어·단일 EXE PE import 검사·private Wine prefix 도구와 개발 CI를 추가했다.
+- Windows UTF-16LE 경로·invalid wire 경로 거부, 공통 worker executable/argument 경계, 동일 EXE 재실행을 위한 worker library entry를 준비했다.
+- Windows file ID/private DACL/final reparse 검사·strict Job handshake·같은 EXE worker를 구현하고 탐색/보기/애니메이션 UI를 연결했다. native 보안·부모 crash·DPI/접근성·FTP/SFTP는 미검증/미완료다.
+- Linux Rust 90개(장기 1개 ignored), GTK 8개, Python 7개, Windows-target Wine unit 30개(native symlink 1개 ignored) 및 platform/빈 창/worker 거부 3개 통과. Windows native 검증과 구분한다.
+
 ## 0.5.1 — 2026-11-16
 
 - 디코딩 busy/프레임 경계마다 이전·다음 버튼을 비활성화하던 처리를 제거했다. 자동 재생 중 page navigation/title 갱신도 반복하지 않는다.

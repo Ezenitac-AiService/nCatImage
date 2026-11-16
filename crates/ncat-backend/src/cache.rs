@@ -177,6 +177,7 @@ mod tests {
             revision: Revision {
                 device: 1,
                 inode: id as u64,
+                identity_high: 0,
                 size: 4,
                 modified: (0, 0),
                 changed: (0, 0),

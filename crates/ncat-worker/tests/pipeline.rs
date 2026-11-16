@@ -1,3 +1,4 @@
+#![cfg(unix)] // Unix shell/permissions/FD regressions; Windows uses the same-EXE suite.
 use image::{ImageBuffer, Rgba};
 use ncat_backend::{Backend, BackendOptions, Book, Event, Frame, View};
 use ncat_core::{DEFAULT_BUDGET, MIB};
@@ -703,6 +704,27 @@ fn basic_static_codecs_use_the_same_worker_boundary() {
         drop(image);
         closed(&backend);
     }
+}
+
+#[test]
+fn explicit_same_executable_worker_arguments_preserve_the_linux_pipeline() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("한글 page with spaces.png");
+    png(&path, 3, 5);
+    let backend = Backend::with_worker_command(
+        ncat_backend::WorkerCommand::same_executable(env!("CARGO_BIN_EXE_ncat-worker").into()),
+        BackendOptions {
+            prefetch: false,
+            ..BackendOptions::default()
+        },
+    )
+    .unwrap();
+    backend.open(path, View::default()).unwrap();
+    let image = frame(&backend);
+    assert_eq!((image.info.width, image.info.height), (3, 5));
+    closed(&backend);
+    drop(image);
+    assert_eq!(backend.budget_used(), 0);
 }
 
 #[test]

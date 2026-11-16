@@ -1,0 +1,18 @@
+[package]
+name = "ncat-windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ncat-protocol.workspace = true
+ncat-presentation.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+ncat-backend.workspace = true
+ncat-worker = { path = "../ncat-worker" }
+ncat-core.workspace = true
+ncat-platform.workspace = true
+tempfile.workspace = true
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Com", "Win32_System_Threading"] }

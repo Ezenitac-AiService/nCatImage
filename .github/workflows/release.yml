@@ -5,7 +5,7 @@ on:
       platform:
         description: "Build selection (no release is published by a manual build)"
         type: choice
-        options: [all, linux, windows, macos]
+        options: [all, linux, windows, macos, preview, windows-experimental]
         default: all
   push:
     tags: ["v*"]
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   linux:
-    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux'
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'preview'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -63,6 +63,32 @@ jobs:
           path: |
             dist/*.AppImage
             dist/SHA256SUMS
+          if-no-files-found: error
+
+  windows-experimental:
+    # Explicit opt-in only; never satisfy the official three-OS readiness gate.
+    if: github.event_name == 'workflow_dispatch' && (inputs.platform == 'preview' || inputs.platform == 'windows-experimental')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: rustup target add x86_64-pc-windows-gnullvm
+      - name: Verified cross toolchain
+        run: |
+          toolchain="$(python3 packaging/windows/fetch-toolchain.py "$RUNNER_TEMP/ncat-llvm")"
+          echo "NCAT_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=$toolchain/bin/x86_64-w64-mingw32-clang" >> "$GITHUB_ENV"
+      - name: Lint Windows code (not a native execution test)
+        run: cargo clippy -p ncat-windows -p ncat-worker -p ncat-platform -p ncat-media -p ncat-backend --all-targets --target x86_64-pc-windows-gnullvm --locked -- -D warnings
+      - name: Package explicitly UNTESTED single EXE and notices
+        run: python3 packaging/windows/package-experimental.py --toolchain "$NCAT_TOOLCHAIN"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distribution-windows-UNTESTED
+          path: dist-windows-experimental/*
           if-no-files-found: error
 
   windows:

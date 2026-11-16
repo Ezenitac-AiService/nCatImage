@@ -16,6 +16,7 @@ pub fn name_bytes(name: &std::ffi::OsStr) -> &[u8] {
 pub struct Revision {
     pub device: u64,
     pub inode: u64,
+    pub identity_high: u64,
     pub size: u64,
     pub modified: (i64, i64),
     pub changed: (i64, i64),
@@ -25,7 +26,8 @@ impl Revision {
     pub fn differences(&self, now: &Self) -> String {
         format!(
             "stage=revision_comparison identity_changed={} size_changed={} mtime_changed={} ctime_changed={}",
-            (self.device, self.inode) != (now.device, now.inode),
+            (self.device, self.inode, self.identity_high)
+                != (now.device, now.inode, now.identity_high),
             self.size != now.size,
             self.modified != now.modified,
             self.changed != now.changed
@@ -47,6 +49,7 @@ impl Revision {
         Ok(Self {
             device: m.dev(),
             inode: m.ino(),
+            identity_high: 0,
             size: m.len(),
             modified: (m.mtime(), m.mtime_nsec()),
             changed: (m.ctime(), m.ctime_nsec()),

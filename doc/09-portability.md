@@ -19,17 +19,17 @@ ncat-worker                  IPC dispatch
        └─ ncat-platform      파일 리비전·native 이름·no-follow 출력 열기
 ```
 
-배포 준비용 로컬 GTK 진입점 `ncat-desktop`을 포함해 현재 10개 crate다. 이 진입점 추가만으로 Windows/macOS의 native 파일/worker 보호가 구현되지는 않는다. [배포 파이프라인](10-distribution.md)은 미구현 OS를 차단한다. 세 가지 의미의 “공통”을 구분한다:
+native `ncat-windows`를 포함해 현재 11개 crate다. Windows는 GTK가 아닌 단일 EXE Win32 셸이며 backend/media·동일 EXE worker·파일 서비스·Job 보호·읽기 UI 연결을 구현했다. Wine Job 검증 실패로 protected decode는 차단되며 native 통합·보안 인증은 미검증이다. [11](11-windows-single-exe-wine.md)에 현재 범위를 구분한다. [배포 파이프라인](10-distribution.md)은 미완료 OS를 차단한다. 세 가지 의미의 “공통”을 구분한다:
 
 | 계층 | 재사용 범위 | 교체/추가할 부분 |
 |---|---|---|
 | `ncat-core`, `ncat-presentation` | GTK·OS 의존성 없는 Rust | 새 셸에서 normalized key/command와 `ReaderView` 사용 |
 | `ncat-gtk` | GTK를 선택하는 OS의 frontend 기반 | GTK 배포·메뉴·배율·접근성·OS 단축키/대화상자 검증 |
-| backend/media/protocol DTO | 재사용 처리 로직; 아직 전체 Windows 빌드 가능은 아님 | 아래 OS 경계를 구현한 뒤 해당 OS에서 통합 검증 |
+| backend/media/protocol DTO | 재사용 처리 로직; Windows cross build 통과 | native Windows 보호·통합 검증 필요 |
 | `ncat-linux` | Linux 전용 실행/연결 서비스 | 새 실행 crate와 OS 네트워크·인증 어댑터 |
 | `ncat-platform/src/unix.rs` | Unix identity·권한·open 구현 | Windows file ID/change time·ACL·reparse-point 방어/공유 모드 |
 | `ncat-platform/src/linux.rs` | Linux worker 보호 | macOS/Windows 보호 계약·부모 종료 연동·자원 제한 |
-| `ncat-protocol/src/path.rs` | Unix raw bytes (wire v1 표현 유지, 현재 제어 wire v2) | Windows 무손실 native 경로 인코딩·검증·wire 계약 |
+| `ncat-protocol/src/path.rs` | wire v4: Unix raw bytes + Windows UTF-16LE | Windows 경로/파일 ID/DACL 구현·Wine 기초 검사; native 보안 검증 필요 |
 | `packaging/linux`, desktop tools | Linux 전용 | 서명·설치·파일 연결·OS별 배포·desktop 시험 |
 
 ## GUI 경계
@@ -52,16 +52,16 @@ GDK 이벤트는 `ncat-gtk/src/input.rs`에서 normalized key로 변환한다. �
 - backend/media의 중복 Unix 리비전을 `ncat-platform::Revision`으로 합쳤다. device/inode/length/mtime/ctime를 모두 유지하며 length/mtime만 비교하는 약한 fallback을 만들지 않는다.
 - private 디렉터리 0700·로그 create-new 0600, 기존 출력의 `NOFOLLOW` open은 Unix adapter에 있다. 부모가 기존 출력 FD를 보유하고 worker가 반환한 경로를 다시 열지 않는 구조를 유지한다.
 - Linux의 address-space/core rlimit·parent-death SIGKILL·no_new_privs·부모 재확인은 `protect_worker()`로 옮겼다. 다른 OS용 보호는 구현되지 않았다. Linux 이외 보호 호출은 Unsupported이며 worker는 보호 실패 시 종료한다. Windows platform 파일 API 자체도 아직 없다.
-- `RawPath`는 별도 `path.rs`에 격리했지만 **Unix byte 형식 그대로**다. lossy UTF-8 변환으로 Windows 포팅을 흉내 내지 않는다. 현재 Windows 전체 workspace 빌드는 불가능하다.
-- worker 이름 선택은 OS adapter를 거쳐 `.exe` 이름을 준비했다. 이것만으로 Windows 프로세스 보호·파이프·파일 공유·임시 파일 정리 호환성이 확보된 것은 아니다.
+- `RawPath`는 Windows W0에서 Unix raw bytes/Windows UTF-16LE로 분리하고 wire v4로 검증한다. 한글/emoji/unpaired surrogate를 Wine에서 왕복 확인했다. 파일 서비스·GUI/worker 보호가 미구현이므로 Windows 전체 workspace 빌드는 아직 불가능하다.
+- worker executable/arguments를 분리해 동일 EXE `--worker` 실행 구성을 추가했고 별도 worker 방식도 유지했다. W0 child pipe는 실제 Wine에서 검사했지만 보호·파일 공유·임시물 정리·codec 연결은 별도 후속 작업이다.
 - worker 통합 시험의 가짜 executable·권한·symlink·비UTF-8 경로 fixture는 Unix 전용이다. 다른 OS 시험은 동등한 안전성 사례로 새로 작성해야 한다.
 
 ## 후속 포팅 순서
 
 1. GTK 재사용 또는 native frontend 선택. native frontend는 presentation 명령을 해당 툴킷 이벤트로 연결한다.
-2. Windows native 경로/wire 인코딩과 file ID/change-time, private ACL, reparse 방어, 열린 임시 파일의 sharing 계약을 구현한다.
+2. W0의 Windows native 경로/wire 인코딩을 기반으로 file ID/change-time, private ACL, reparse 방어, 열린 임시 파일의 sharing 계약을 구현한다.
 3. Windows/macOS worker 보호와 부모 종료·취소/kill/reap을 구현한다. 보호 없는 codec 실행으로 우회하지 않는다.
 4. OS 네트워크 인증/마운트, 파일 대화상자·드롭·명령행·앱 lifecycle을 연결한다.
 5. OS별 통합/desktop/security 회귀 및 서명·패키징을 수행한다. macOS가 Unix라는 이유로 Linux 보호가 동작한다고 간주하지 않는다.
 
-이번 검증 결과는 [08](08-implementation-status.md)의 미릴리스 절을 따른다. 현재 설치 target은 Linux 하나이며 Windows/macOS 컴파일/실행 검증은 하지 않았다. 공통 두 crate만 대상으로 하는 OS별 CI 정의를 추가하되 실제 CI 결과가 나오기 전 통과했다고 보고하지 않는다.
+이번 검증 결과는 [08](08-implementation-status.md) 및 [11](11-windows-single-exe-wine.md)을 따른다. Linux 외 Windows gnullvm target으로 bootstrap과 순수 Rust unit test를 cross build/Wine 실행했다. 실제 Windows/macOS 제품 실행은 미검증이다. CI 정의 추가와 원격 결과는 구분한다.

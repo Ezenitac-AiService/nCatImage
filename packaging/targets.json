@@ -8,14 +8,15 @@
   },
   "windows": {
     "ready": false,
-    "format": "portable.zip",
+    "format": "exe",
     "architecture": "x86_64",
-    "gui": "ncat-desktop",
+    "gui": "ncat-windows",
     "blockers": [
-      "Lossless Windows native path IPC encoding and validation are not implemented",
-      "Windows file identity, private ACLs and reparse-point-safe output are not implemented",
-      "Windows worker resource protection and parent-exit handling are not implemented",
-      "Packaged GTK runtime relocation and local-file desktop smoke are not verified"
+      "Native Win32 viewer integration is implemented but protected image display/input parity is not verified on Windows",
+      "Windows file identity/private DACL/reparse implementation needs native NTFS attack regressions",
+      "Job Object limits fail closed under Wine; native memory enforcement and parent-exit cleanup need validation",
+      "FTP/SFTP OS integration, DPI/accessibility and complete input parity are unfinished",
+      "Single-EXE codec operation and security regressions on native Windows are not verified"
     ]
   },
   "macos": {

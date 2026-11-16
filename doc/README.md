@@ -23,7 +23,8 @@ OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안�
 | [07 검증/로드맵](07-validation-roadmap.md) | 측정·합격 기준·Linux 단계·미결정 사항 |
 | [08 구현 상태](08-implementation-status.md) | 실제 코드/실행 결과·기능 ID별 진척·미검증/제한 |
 | [09 포팅 경계](09-portability.md) | 공통 presentation·GTK·OS 서비스 및 Windows/macOS 미구현 목록 |
-| [10 배포 파이프라인](10-distribution.md) | AppImage·Windows ZIP·macOS DMG 작업, readiness gate·서명/릴리스 정책 |
+| [10 배포 파이프라인](10-distribution.md) | AppImage·Windows 단일 EXE 전환·macOS DMG, readiness gate·서명/릴리스 정책 |
+| [11 Windows 단일 EXE·Wine](11-windows-single-exe-wine.md) | native GUI·동일 EXE worker·Windows 안전성·Wine 단계별 개발 계획 |
 | [작업 내역](../CHANGELOG.md) | 0.4.0~0.4.3 반영 사항·릴리스 경계 |
 | [검증 도구](../tools/README.md) | 합성 입력·worker·GUI·네트워크 재현 절차 |
 | [개발 지침](../AGENT.md) | 에이전트 필수 원칙 |

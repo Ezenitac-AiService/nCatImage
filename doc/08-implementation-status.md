@@ -2,6 +2,25 @@
 
 기준일: 2026-11-16 · v0.5.1 · **M0 일부 실험 + M1 개발 프리뷰, MVP/정식 안정판 아님**
 
+## v0.5.2 공개 준비 — Windows UNTESTED 포함
+
+2026-11-17 사용자 승인으로 버전을 0.5.2로 올리고 Linux AppImage와 Windows 단일 EXE 실험판을 release build에 포함한다. **실제 Windows 환경에서는 아직 테스트하지 않았다.** Windows 정식 readiness는 false다. 파일명·README·릴리스 노트·창 제목·동봉 경고문에 UNTESTED를 명시하며, native CI 정의/미래 결과와 이번 공개 당시 검증을 구분한다. 기존 Release는 유지한다.
+
+## 2026-11-17 Windows W1/W2 및 native 기능 연결
+
+- [상세 구현·검증·남은 동등성](11-windows-single-exe-wine.md#7-w1w2-구현-및-w3w4-기능-연결-2026-11-17-후속). Windows 파일 ID/DACL/final reparse 검사, strict Job/handshake, 동일 EXE worker와 Win32 파일/탐색/보기/애니메이션 UI를 연결했다.
+- Wine Job 제한 readback이 0이어서 protected decode는 계속 거부한다. 우회는 없으며 Windows 이미지 표시·native 보안·입력/접근성/DPI/FTP/SFTP 동등성은 미검증/미완료다. native CI·합성 통합 도구는 정의했지만 실행 결과는 없다.
+- Linux Rust 90개(장기 1개 ignored), 실제 GTK 8개, Python 6개, Windows-target Wine unit 30개(native symlink 1개 ignored), Wine platform/빈 창/worker 거부 3개 통과. Linux/Windows Clippy·release/cross PE system-import 검사를 통과했다.
+- `ready: false` 유지. 버전 변경·커밋·푸시·공개 산출물 교체는 하지 않았다.
+
+## 2026-11-17 Windows 단일 EXE/Wine W0 (이력)
+
+- 계획은 [11](11-windows-single-exe-wine.md)에 정리했다. `ncat-windows`는 GTK/DLL 추출 없는 Win32 bootstrap으로, 같은 EXE self-test·bounded child pipe·경로와 창 생성/종료를 검사한다. 이미지 뷰어는 아직 아니다.
+- Windows lossless UTF-16LE/invalid wire 경로 거부, same-EXE worker command 경계, worker library entry를 추가했다. Win32 FFI는 native module만 허용하며 공통 crate의 unsafe 금지는 유지한다.
+- Wine 11.22에서 bootstrap 3개와 Windows target 순수 Rust 21개 통과. 배포 폴더에 추가 파일이 생기지 않고 PE에는 system/API-set DLL import만 있음을 검사했다. Wine은 native Windows 보안/GUI 인증을 대신하지 않는다.
+- Linux Rust 85개(장기 1개 ignored), GTK 애니메이션/컨트롤 8개·Python 배포 검사 6개 통과. Linux/Windows target Clippy·fmt·workspace release/native PE 빌드·actionlint도 통과했다. 원격 CI는 정의만 추가했으며 실행 결과로 계산하지 않는다.
+- Windows file ID/ACL/reparse·Job Object 보호와 실제 codec/GUI 연결은 미구현이다. `--worker`는 exit 2로 거부하고 release readiness는 false다. Linux AppImage/기존 Release는 변경하지 않는다.
+
 ## v0.5.1 프레임 UI 수정
 
 - busy/각 프레임마다 이전·다음 버튼 sensitivity를 토글하던 원인을 제거했다. 창 제목/페이지 컨트롤을 매 프레임 갱신하지 않으며 프레임 정보는 애니메이션 툴바와 같은 행에 있다.
@@ -53,7 +72,7 @@
 
 `ncat-linux(GTK) → ncat-backend(조정 thread) → ncat-worker(별도 프로세스) → ncat-media(코덱/ZIP) → 부모 소유 RGBA lease → GdkMemoryTexture`.
 
-- Rust Cargo workspace 6개 crate·toolchain/lock·Linux CI 정의를 추가했다. 모든 first-party crate가 unsafe를 금지한다. worker 보호와 no-follow open은 rustix 안전 API를 사용한다(의존성 내부 unsafe까지 없다는 의미는 아니다).
+- 초기 Linux Rust workspace 6개 crate·toolchain/lock·CI를 추가했을 당시 모든 first-party crate가 unsafe를 금지했다. worker 보호와 no-follow open은 rustix 안전 API를 사용한다. 현재 Windows FFI 예외는 위 W0 절에 구분한다(의존성 내부 unsafe까지 없다는 의미는 아니다).
 - 파일/폴더/ZIP/CBZ 열기·worker 내 자연 정렬/메타/디코딩·선택 파일 우선 표시 후 폴더 목록·이전/다음/번호 이동·일부 keyboard/드롭/회전/맞춤/확대/패닝/전체 화면이 연결되었다.
 - 실제 GUI는 단일 페이지다. RTL은 현재 좌우 키 매핑만 바꾸며 spread 생성 알고리즘은 core 단위 테스트까지다.
 - 한 worker를 지연 실행/재사용한다. UI 조정·IPC reader thread, worker 실행 thread이며 Tokio/Rayon/libadwaita/custom renderer를 도입하지 않았다.
@@ -142,7 +161,7 @@ python3 tools/measure-smoke.py -- target/release/ncat-linux --smoke-empty
 ### 캐시 추가 후 재검증
 
 - 폴더 하위 디렉터리 제외·폴더/ZIP 프레임 재사용(Arc 동일성)·prefetch hit·소스 변경/삭제·재열기·보기/회전 분리·LRU 퇴출/표시 lease 유지·64MiB에서 전경 우선 회수·동일 대상 작업 승격/다른 대상 취소·설정 검증·설정 deadline/worker 회수를 회귀 테스트에 추가했다.
-- 모든 first-party crate에 `forbid(unsafe_code)`. 직접 libc 의존성을 rustix 1.1.6의 safe API로 교체했다. 보호 적용 실패는 계속 실행 거부하며 상속된 더 낮은 주소 공간 제한은 올리지 않는다. 의존성과 시스템 라이브러리 내부 unsafe는 별도다.
+- 초기 Linux first-party crate에 `forbid(unsafe_code)`. 직접 libc 의존성을 rustix 1.1.6의 safe API로 교체했다. 이후 Windows native FFI 예외는 위 W0 절을 따른다. 보호 적용 실패는 계속 실행 거부하며 상속된 더 낮은 주소 공간 제한은 올리지 않는다. 의존성과 시스템 라이브러리 내부 unsafe는 별도다.
 - 새 release의 실제 KDE Wayland PNG/CBZ texture 생성/종료 smoke도 정상이다. 기존 GTK slider 최소 크기 경고는 남아 있다. 동시 실행한 단발 smoke라 기존 메모리 표와 성능 비교하지 않는다.
 
 동일 0.96MP 합성 PNG 3장/Deflate CBZ, release, prefetch 끔, 각 모드 독립 backend·warm-up 3회 제외 후 **500회 재탐색 × 3묶음**. OS file cache를 비우지 않았고 순서는 매번 cache off→on이다. p95는 정렬된 500개 중 475번째(nearest rank), 아래 범위는 3묶음의 최소~최대다. **GTK upload/compositor 제시를 포함하지 않는 요청→backend 이벤트 수신 시간**이며 정식 200페이지/2~4MP 게이트가 아니다.

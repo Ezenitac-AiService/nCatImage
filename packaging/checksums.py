@@ -10,13 +10,14 @@ parser.add_argument("--require-all", action="store_true")
 args = parser.parse_args()
 paths = sorted(path for path in args.directory.iterdir()
                if path.is_file() and path.name.startswith("nCatImage-")
-               and path.name.endswith((".AppImage", "-portable.zip", ".dmg")))
+               and path.name.endswith((".AppImage", "-portable.zip", "-windows-x86_64.exe",
+                                       "-windows-NOTICES.zip", "-windows-UNTESTED.txt", ".dmg")))
 if not paths:
     raise SystemExit("No release packages found")
 if args.require_all:
-    for suffix in [".AppImage", "-portable.zip", ".dmg"]:
-        if sum(path.name.endswith(suffix) for path in paths) != 1:
-            raise SystemExit(f"Expected exactly one {suffix} package")
+    for suffixes in [(".AppImage",), ("-portable.zip", "-windows-x86_64.exe"), (".dmg",)]:
+        if sum(path.name.endswith(suffixes) for path in paths) != 1:
+            raise SystemExit(f"Expected exactly one {' or '.join(suffixes)} package")
 lines = []
 for path in paths:
     with path.open("rb") as file:

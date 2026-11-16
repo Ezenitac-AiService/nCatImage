@@ -3,11 +3,13 @@
 mod cache;
 mod diagnostics;
 mod options;
+mod worker_command;
 use cache::{FrameCache, Key, Revision, Target};
 pub use diagnostics::{DropEvent, DropRejection, NetworkBridge, NetworkFailure, NetworkProtocol};
 pub use options::BackendOptions;
 use std::cell::Cell;
 use std::collections::VecDeque;
+pub use worker_command::WorkerCommand;
 
 use ncat_core::{Budget, DEFAULT_BUDGET, MIB, Permit};
 use ncat_protocol::{
@@ -16,8 +18,8 @@ use ncat_protocol::{
 };
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -254,6 +256,10 @@ impl Backend {
         )
     }
     pub fn with_options(worker: PathBuf, options: BackendOptions) -> io::Result<Self> {
+        Self::with_worker_command(WorkerCommand::separate(worker), options)
+    }
+
+    pub fn with_worker_command(worker: WorkerCommand, options: BackendOptions) -> io::Result<Self> {
         let options = options.validate()?;
         let shared = Arc::new(Shared {
             pending: Mutex::new(None),
@@ -406,6 +412,7 @@ fn emit(
 }
 
 struct Worker {
+    protection: Option<ncat_platform::WorkerProtection>,
     animation_workspace: Option<Permit>,
     animation_target: Option<Key>,
     animation_generation: u64,
@@ -420,13 +427,22 @@ struct Worker {
 }
 
 impl Worker {
-    fn spawn(path: &Path) -> Result<Self, ErrorCode> {
-        let mut child = Command::new(path)
+    fn spawn(worker: &WorkerCommand) -> Result<Self, ErrorCode> {
+        let mut child = worker
+            .command()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| ErrorCode::Worker)?;
+        let protection = match ncat_platform::start_protected_worker(&mut child) {
+            Ok(protection) => protection,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ErrorCode::Worker);
+            }
+        };
         let input = BufWriter::new(child.stdin.take().ok_or(ErrorCode::Worker)?);
         let stdout = child.stdout.take().ok_or(ErrorCode::Worker)?;
         let (tx, responses) = mpsc::sync_channel(2);
@@ -471,6 +487,7 @@ impl Worker {
             }
         };
         Ok(Self {
+            protection: Some(protection),
             animation_workspace: None,
             animation_target: None,
             animation_generation: 0,
@@ -499,6 +516,7 @@ impl Worker {
         self.index_permit = None;
         self.animation_workspace = None;
         self.animation_target = None;
+        self.protection = None;
     }
 
     fn send(&mut self, request: Request) -> Result<u64, ErrorCode> {
@@ -726,8 +744,9 @@ impl Worker {
             .prefix("ncat-frame-")
             .tempdir()
             .map_err(|_| ErrorCode::Io)?;
-        let mut output =
-            tempfile::NamedTempFile::new_in(directory.path()).map_err(|_| ErrorCode::Io)?;
+        let private = directory.path().join("private");
+        ncat_platform::create_private_directory(&private).map_err(|_| ErrorCode::Io)?;
+        let mut output = tempfile::NamedTempFile::new_in(&private).map_err(|_| ErrorCode::Io)?;
         shared.stats.decodes.fetch_add(1, Ordering::Relaxed);
         let request = if let Some(seek) = advance {
             match seek {
@@ -822,7 +841,7 @@ struct PrefetchPlan {
 }
 
 struct Engine {
-    path: PathBuf,
+    path: WorkerCommand,
     worker: Option<Worker>,
     cache: FrameCache,
     previous: Option<(u64, usize)>,
@@ -1274,7 +1293,7 @@ impl Engine {
 }
 
 fn coordinator(
-    path: PathBuf,
+    path: WorkerCommand,
     shared: Arc<Shared>,
     sender: async_channel::Sender<Event>,
     cache_bytes: u64,

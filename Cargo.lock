@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-backend"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-channel",
  "ncat-core",
@@ -672,11 +672,11 @@ dependencies = [
 
 [[package]]
 name = "ncat-core"
-version = "0.5.1"
+version = "0.5.2"
 
 [[package]]
 name = "ncat-desktop"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "gtk4",
  "ncat-backend",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-gtk"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "gtk4",
  "ncat-backend",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-linux"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "gtk4",
  "ncat-backend",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "ncat-media"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "image",
  "ncat-core",
@@ -717,31 +717,46 @@ dependencies = [
 
 [[package]]
 name = "ncat-platform"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ncat-protocol",
  "rustix",
  "tempfile",
+ "windows-sys",
 ]
 
 [[package]]
 name = "ncat-presentation"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ncat-core",
 ]
 
 [[package]]
 name = "ncat-protocol"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
 ]
 
 [[package]]
+name = "ncat-windows"
+version = "0.5.2"
+dependencies = [
+ "ncat-backend",
+ "ncat-core",
+ "ncat-platform",
+ "ncat-presentation",
+ "ncat-protocol",
+ "ncat-worker",
+ "tempfile",
+ "windows-sys",
+]
+
+[[package]]
 name = "ncat-worker"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "gif",
  "image",

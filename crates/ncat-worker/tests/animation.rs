@@ -1,3 +1,4 @@
+#![cfg(unix)] // Standalone Unix worker; native Windows CI tests the same EXE.
 use image::{ImageBuffer, ImageEncoder, Rgba};
 use ncat_backend::{Backend, BackendOptions, Book, Event, Frame, View};
 use ncat_protocol::ErrorCode;

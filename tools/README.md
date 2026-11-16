@@ -4,6 +4,10 @@
 
 ## Rust 회귀 및 예제
 
+Windows 단일 EXE/Wine 검사는 [11](../doc/11-windows-single-exe-wine.md)을 따른다. `packaging/windows/build-single.py`는 GTK 비의존 개발 뷰어와 PE import report를 만든다. `tools/windows-wine-smoke.py --image target/windows-single/nCatImage.exe`는 새 private prefix에서 `--self-test-platform`·빈 창·보호 없는 worker 거부를 검사한다. Wine Job readback 제약 때문에 protected decode 성공 검사와 구분한다.
+
+native Windows에서는 `python tools/windows-native-smoke.py --image target/release/ncat-windows.exe`로 보호 handshake·PNG/CBZ pipeline·GUI 표시/재생/500회 탐색을 검사하도록 CI를 정의했다. 이 native 검사는 로컬에서 실행하지 못했으며 통과로 계산하지 않는다. 생성 fixture의 전후 hash·단일 EXE 배포 폴더를 확인하며 NTFS 공격·부모 crash·메모리 고갈·실제 입력/DPI 인증을 대신하지 않는다.
+
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings

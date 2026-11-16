@@ -1,10 +1,22 @@
 # 10. OS별 빌드·패키징·릴리스 파이프라인
 
+## v0.5.2 실험판 공개 승인 (2026-11-17)
+
+사용자 요청으로 Linux AppImage와 **실제 Windows에서 아직 테스트하지 않은 UNTESTED 단일 EXE**를 같은 프리릴리스에 포함한다. `targets.json`의 Windows `ready: false` 및 정식 세 OS gate는 유지한다. 아래 기존 ZIP/전 OS 정책은 정식 배포 경로의 이력이며, 이번 예외는 Windows 지원 완료를 의미하지 않는다.
+
+```bash
+gh workflow run release.yml --ref main -f platform=preview
+```
+
+이 수동 선택은 Linux 패키지와 별도 `windows-experimental` cross-build 작업만 실행한다. Windows 산출물은 `nCatImage-VERSION-UNTESTED-windows-x86_64.exe`, 경고문, 의존성 고지 ZIP, 체크섬이다. 경고문·README·릴리스 노트·창 제목에 미시험 상태를 명시한다. 자동으로 정식 readiness를 바꾸거나 보호 검사를 끄지 않는다. 성공 artifact와 hash를 확인한 뒤 GitHub CLI로 새 프리릴리스를 공개한다. 기존 v0.5.1 등은 덮어쓰지 않는다.
+
 2026-11-16 · 소스 버전 0.5.0. 기존 v0.4.3 Release/태그/다운로드는 덮어쓰지 않는다.
 
 **v0.5.0 예외 승인:** 사용자가 Linux 우선 공개를 선택했다. 수동 Distribution packages 빌드의 Linux 성공 artifact를 검증한 뒤 GitHub CLI로 Linux AppImage·체크섬을 공개한다. 자동 태그 workflow의 전 OS 성공 조건을 끄지 않으며, Windows/macOS artifact는 native 준비 전 만들지 않는다. 릴리스 노트에 이 범위를 명시한다.
 
 ## 형식과 현재 상태
+
+**2026-11-17 방향 변경:** Windows 최종 목표는 ZIP/자가 추출 EXE가 아닌 GTK 비의존 **단일 native EXE**다. 기존 GTK ZIP 스크립트는 legacy로 비활성화했다. `ncat-windows` W0 창/IPC/경로 prototype만 cross build/Wine 검사하며 `.github/workflows/windows-bootstrap.yml`의 `NOT-A-VIEWER` artifact와 제품 배포를 구분한다. W1~W5 작업은 [11](11-windows-single-exe-wine.md)을 따른다. 아래 ZIP 설명은 과거 설계다.
 
 | OS | 계획 아티팩트 | 구성 | 현재 상태 |
 |---|---|---|---|

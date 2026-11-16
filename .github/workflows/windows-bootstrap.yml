@@ -1,0 +1,57 @@
+name: Windows development checks (not a release)
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  wine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Isolated Wine and virtual display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wine wine64 xvfb xauth
+      - run: rustup target add x86_64-pc-windows-gnullvm
+      - name: Download verified external cross toolchain
+        run: |
+          toolchain="$(python3 packaging/windows/fetch-toolchain.py "$RUNNER_TEMP/ncat-llvm")"
+          echo "NCAT_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=$toolchain/bin/x86_64-w64-mingw32-clang" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C target-feature=+crt-static -C link-arg=-Wno-unused-command-line-argument" >> "$GITHUB_ENV"
+      - name: Windows target lint (no GTK)
+        run: cargo clippy -p ncat-windows -p ncat-protocol -p ncat-presentation -p ncat-platform -p ncat-media -p ncat-backend -p ncat-worker --all-targets --target x86_64-pc-windows-gnullvm --locked -- -D warnings
+      - name: Native PE and system-DLL-only import check
+        run: python3 packaging/windows/build-single.py --toolchain "$NCAT_TOOLCHAIN"
+      - name: Private prefix native window, paths, IPC and fail-closed worker smoke
+        run: xvfb-run -a python3 tools/windows-wine-smoke.py --image target/windows-single/nCatImage.exe
+      - name: Windows core/presentation/protocol unit tests under Wine
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUNNER: wine
+          WINEPREFIX: ${{ runner.temp }}/ncat-wine-unit-prefix
+          WINEARCH: win64
+          WINEDEBUG: "-all"
+          WINEDLLOVERRIDES: "mscoree,mshtml="
+        run: xvfb-run -a cargo test -p ncat-core -p ncat-presentation -p ncat-protocol -p ncat-media -p ncat-platform -p ncat-windows --target x86_64-pc-windows-gnullvm --locked
+      - name: Preserve dependency notices for the development artifact
+        run: python3 packaging/collect-rust-notices.py target/windows-w0-notices
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-development-NOT-A-RELEASE
+          path: |
+            target/windows-single/nCatImage.exe
+            target/windows-single-build.json
+            target/windows-w0-notices/
+            doc/11-windows-single-exe-wine.md
+          if-no-files-found: error
+  native:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native platform/media/policy tests (no GTK)
+        run: cargo test -p ncat-core -p ncat-presentation -p ncat-protocol -p ncat-platform -p ncat-media -p ncat-backend -p ncat-windows --locked
+      - name: Build same-EXE viewer/worker
+        run: cargo build -p ncat-windows --release --locked
+      - name: Protected pipeline and GUI smoke (no Wine bypass)
+        run: python tools/windows-native-smoke.py --image target/release/ncat-windows.exe

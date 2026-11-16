@@ -2,6 +2,7 @@
 *.profraw
 log/
 /dist/
+/dist-windows-experimental/
 /*.AppImage
 __pycache__/
 *.pyc
