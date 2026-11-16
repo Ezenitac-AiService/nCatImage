@@ -8,6 +8,7 @@ use ncat_backend::{
     Backend, Book, DropEvent, DropRejection, Event, FrameBytes, NetworkFailure, View, worker_path,
 };
 use ncat_core::Direction;
+use ncat_presentation::playback::Playback;
 use ncat_presentation::{ReaderView, adjacent, interface_shown};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -49,13 +50,211 @@ struct Ui {
     closing: Cell<bool>,
     reload_timer: RefCell<Option<glib::SourceId>>,
     loading_timer: RefCell<Option<glib::SourceId>>,
+    animation_timer: RefCell<Option<glib::SourceId>>,
+    animation_view: Cell<View>,
+    playback: Cell<Playback>,
+    frame_status: gtk::Label,
+    frame_previous: gtk::Button,
+    frame_next: gtk::Button,
+    play_pause: gtk::Button,
+    speed: gtk::DropDown,
     smoke: bool,
+    smoke_animation: bool,
+    smoke_controls: bool,
+    smoke_animation_frames: Cell<u32>,
     smoke_steps: Cell<Option<u32>>,
     smoke_started: Cell<bool>,
     smoke_ok: Rc<Cell<bool>>,
 }
 
 impl Ui {
+    fn controls_smoke(self: &Rc<Self>, count: u32) {
+        let state = self.playback.get();
+        match count {
+            1 => {
+                self.play_pause.emit_clicked();
+                assert!(self.playback.get().paused);
+                let weak = Rc::downgrade(self);
+                glib::timeout_add_local_once(Duration::from_millis(100), move || {
+                    if let Some(ui) = weak.upgrade() {
+                        assert_eq!(ui.playback.get().index, 0);
+                        assert!(!ui.playback.get().busy);
+                        ui.frame_next.emit_clicked();
+                    }
+                });
+            }
+            2 => {
+                assert!(state.paused);
+                assert_eq!(state.index, 1);
+                self.frame_previous.emit_clicked();
+            }
+            3 => {
+                assert!(state.paused);
+                assert_eq!(state.index, 0);
+                self.speed.set_selected(6);
+                assert_eq!(self.playback.get().speed, 2.0);
+                self.play_pause.emit_clicked();
+            }
+            4 => {
+                assert_eq!(state.index, 1);
+                assert!(!state.paused);
+                self.play_pause.emit_clicked();
+                self.frame_next.emit_clicked();
+            }
+            5 => {
+                assert_eq!(state.index, 0);
+                assert!(!state.paused);
+                assert!(self.frame_status.text().contains("2.00×"));
+                assert!(self.window.title().unwrap().contains("프레임 1/2"));
+                self.cancel_reload();
+                self.smoke_ok.set(true);
+                println!(
+                    "animation_controls_smoke=ok pause=true previous=true next=true speed=2 restart=true title=true"
+                );
+                self.window.close();
+            }
+            _ => panic!("unexpected controls smoke frame"),
+        }
+    }
+
+    fn stop_animation_timer(&self) {
+        if let Some(timer) = self.animation_timer.borrow_mut().take() {
+            timer.remove();
+        }
+    }
+
+    fn reset_playback(&self, autoplay: bool) {
+        let old = self.playback.get();
+        self.playback.set(Playback {
+            speed: old.speed,
+            paused: !autoplay && old.paused,
+            ..Playback::default()
+        });
+        self.update_playback();
+    }
+
+    fn playback_text(&self) -> String {
+        let state = self.playback.get();
+        if !state.active {
+            return String::new();
+        }
+        format!(
+            " · 프레임 {}/{} · {} · {:.2}×",
+            state.index + 1,
+            state.total.map_or("?".into(), |n| n.to_string()),
+            if state.ended {
+                "종료"
+            } else if state.paused {
+                "일시정지"
+            } else {
+                "재생"
+            },
+            state.speed
+        )
+    }
+
+    fn update_playback(&self) {
+        let state = self.playback.get();
+        let text = self.playback_text();
+        self.frame_status.set_text(if text.is_empty() {
+            "nCatImage"
+        } else {
+            text.trim_start_matches(" · ")
+        });
+        self.frame_previous
+            .set_sensitive(state.active && !state.busy && state.index > 0);
+        self.frame_next
+            .set_sensitive(state.active && !state.busy && !state.ended);
+        self.play_pause.set_sensitive(state.active);
+        self.play_pause.set_label(if state.paused {
+            "재생 /"
+        } else {
+            "일시정지 /"
+        });
+        self.speed.set_sensitive(state.active);
+        self.update_navigation();
+    }
+
+    fn request_animation(self: &Rc<Self>, seek: Option<u32>) {
+        let mut state = self.playback.get();
+        if !state.active || state.busy || self.closing.get() {
+            return;
+        }
+        let Some(book) = self.book.borrow().clone() else {
+            return;
+        };
+        self.stop_animation_timer();
+        let result = if let Some(frame) = seek {
+            self.backend
+                .animation_seek(book, self.selected.get(), self.animation_view.get(), frame)
+        } else {
+            self.backend
+                .animation_next(book, self.selected.get(), self.animation_view.get())
+        };
+        state.busy = result.is_ok();
+        self.playback.set(state);
+        self.update_playback();
+    }
+
+    fn schedule_animation(self: &Rc<Self>) {
+        self.stop_animation_timer();
+        let state = self.playback.get();
+        if !state.active
+            || state.paused
+            || state.ended
+            || state.busy
+            || (self.smoke && !self.smoke_animation)
+        {
+            return;
+        }
+        let generation = self.backend.generation();
+        let weak = Rc::downgrade(self);
+        *self.animation_timer.borrow_mut() = Some(glib::timeout_add_local_once(
+            Duration::from_millis(state.delay()),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.animation_timer.borrow_mut().take();
+                    if !ui.closing.get() && ui.backend.generation() == generation {
+                        ui.request_animation(None);
+                    }
+                }
+            },
+        ));
+    }
+
+    fn step_frame(self: &Rc<Self>, forward: bool) {
+        let mut state = self.playback.get();
+        if !state.active || state.busy {
+            return;
+        }
+        state.paused = true;
+        self.playback.set(state);
+        self.stop_animation_timer();
+        self.update_playback();
+        if forward {
+            if !state.ended {
+                self.request_animation(None);
+            }
+        } else if state.index > 0 {
+            self.request_animation(Some(state.index - 1));
+        }
+    }
+
+    fn toggle_playback(self: &Rc<Self>) {
+        let mut state = self.playback.get();
+        if !state.active {
+            return;
+        }
+        state.paused = !state.paused;
+        self.playback.set(state);
+        self.update_playback();
+        if !state.paused && state.ended && !state.busy {
+            self.request_animation(Some(0));
+        } else {
+            self.schedule_animation();
+        }
+    }
+
     fn focus_viewer(&self) {
         self.interface_input.set(false);
         self.picture.grab_focus();
@@ -224,11 +423,13 @@ impl Ui {
         }
         self.cancel_reload();
         self.book.borrow_mut().take();
+        self.reset_playback(true);
         self.picture.set_paintable(gdk::Paintable::NONE);
         self.selected.set(0);
         self.reader_view.set(ReaderView::default());
         self.layout_picture();
-        match self.backend.open(path, self.view()) {
+        self.animation_view.set(self.view());
+        match self.backend.open(path, self.animation_view.get()) {
             Ok(generation) => {
                 if from_drop {
                     self.drop_generation.set(Some(generation));
@@ -252,6 +453,9 @@ impl Ui {
     }
 
     fn cancel_reload(&self) {
+        if let Some(timer) = self.animation_timer.borrow_mut().take() {
+            timer.remove();
+        }
         if let Some(timer) = self.reload_timer.borrow_mut().take() {
             timer.remove();
         }
@@ -265,8 +469,14 @@ impl Ui {
             if !book.complete || index >= book.pages.len() {
                 return;
             }
+            self.reset_playback(index != self.selected.get());
             self.selected.set(index);
-            if self.backend.load(book, index, self.view()).is_ok() {
+            self.animation_view.set(self.view());
+            if self
+                .backend
+                .load(book, index, self.animation_view.get())
+                .is_ok()
+            {
                 self.loading();
             }
             self.update_navigation();
@@ -326,10 +536,11 @@ impl Ui {
                 "분석 중".into()
             };
             self.window.set_title(Some(&format!(
-                "{} / {} · {} — nCatImage",
+                "{} / {} · {} — nCatImage{}",
                 self.selected.get() + 1,
                 count,
-                name
+                name,
+                self.playback_text()
             )));
         }
         self.syncing.set(false);
@@ -362,6 +573,7 @@ impl Ui {
         self.reader_view.set(state);
         self.layout_picture();
         self.cancel_reload();
+        self.backend.cancel();
         let weak = Rc::downgrade(self);
         *self.reload_timer.borrow_mut() = Some(glib::timeout_add_local_once(
             Duration::from_millis(100),
@@ -517,6 +729,15 @@ impl Ui {
                 state.original = (info.original_width, info.original_height);
                 self.reader_view.set(state);
                 self.layout_picture();
+                if let Some(animation) = &info.animation {
+                    let mut state = self.playback.get();
+                    state.displayed(animation.index, animation.cycle, animation.delay_ms);
+                    self.playback.set(state);
+                    self.update_playback();
+                    self.schedule_animation();
+                } else {
+                    self.reset_playback(true);
+                }
                 self.status.set_text(&format!(
                     "{} · {}×{} · {} · {:.1} MiB 예약 · M1 축소 표시 / ICC 보정 미구현",
                     info.format,
@@ -526,6 +747,23 @@ impl Ui {
                     self.backend.budget_used() as f64 / 1_048_576.0
                 ));
                 if self.smoke {
+                    if self.smoke_animation {
+                        if info.animation.is_none() {
+                            self.window.close();
+                            return;
+                        }
+                        let count = self.smoke_animation_frames.get() + 1;
+                        self.smoke_animation_frames.set(count);
+                        if self.smoke_controls {
+                            self.controls_smoke(count);
+                            return;
+                        }
+                        if count < 6 {
+                            return;
+                        }
+                        self.cancel_reload();
+                        println!("animation_smoke=ok displayed_frames={count}");
+                    }
                     if let Some(remaining) = self.smoke_steps.get() {
                         if remaining > 0 {
                             self.start_navigation_smoke();
@@ -552,6 +790,10 @@ impl Ui {
                 }
             }
             Event::Error { code, .. } => {
+                self.reset_playback(true);
+                if let Some(timer) = self.animation_timer.borrow_mut().take() {
+                    timer.remove();
+                }
                 if let Some(generation) = self.drop_generation.take() {
                     self.backend
                         .diagnose_drop(DropEvent::OpenFailed { generation, code });
@@ -564,6 +806,27 @@ impl Ui {
                 if self.smoke {
                     self.smoke_ok.set(false);
                     eprintln!("nCatImage: smoke failure: {code:?}");
+                    self.window.close();
+                }
+            }
+            Event::AnimationEnded { .. } => {
+                let mut state = self.playback.get();
+                state.finish();
+                self.playback.set(state);
+                self.stop_animation_timer();
+                self.update_playback();
+                if self.smoke_controls {
+                    assert_eq!(self.smoke_animation_frames.get(), 4);
+                    assert!(self.playback.get().ended && self.playback.get().paused);
+                    self.play_pause.emit_clicked();
+                    return;
+                }
+                if self.smoke_animation {
+                    let count = self.smoke_animation_frames.get();
+                    self.smoke_ok.set(count >= 2);
+                    if count >= 2 {
+                        println!("animation_smoke=ok displayed_frames={count} finite_end=true");
+                    }
                     self.window.close();
                 }
             }
@@ -616,15 +879,26 @@ impl Ui {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SmokeMode {
+    None,
+    Empty,
+    Navigation,
+    Frame,
+    Animation,
+    AnimationControls,
+}
+
 fn build(
     app: &gtk::Application,
     initial: Option<PathBuf>,
-    smoke: bool,
-    smoke_empty: bool,
-    smoke_navigation: bool,
+    mode: SmokeMode,
     smoke_ok: Rc<Cell<bool>>,
     resolve_network: network::Resolver,
 ) {
+    let smoke = mode != SmokeMode::None;
+    let smoke_empty = mode == SmokeMode::Empty;
+    let smoke_navigation = mode == SmokeMode::Navigation;
     let backend = match ncat_backend::BackendOptions::from_env()
         .and_then(|options| worker_path().and_then(|path| Backend::with_options(path, options)))
     {
@@ -655,6 +929,9 @@ fn build(
     let fullscreen = gtk::Button::with_label("전체 화면");
     header.pack_end(&fullscreen);
     window.set_titlebar(Some(&header));
+    let frame_status = gtk::Label::new(Some("nCatImage"));
+    frame_status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    header.set_title_widget(Some(&frame_status));
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let picture = gtk::Picture::builder()
@@ -703,6 +980,25 @@ fn build(
         controls.append(widget);
     }
     toolbar.append(&controls);
+    let animation_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    animation_controls.set_halign(gtk::Align::Center);
+    let frame_previous = gtk::Button::with_label("이전 프레임 ,");
+    let frame_next = gtk::Button::with_label("다음 프레임 .");
+    let play_pause = gtk::Button::with_label("일시정지 /");
+    frame_previous.set_tooltip_text(Some("일시정지 후 이전 프레임 · ,"));
+    frame_next.set_tooltip_text(Some("일시정지 후 다음 프레임 · ."));
+    play_pause.set_tooltip_text(Some("재생 / 일시정지 · /"));
+    let speed = gtk::DropDown::from_strings(&[
+        "0.25×", "0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×", "3×", "4×",
+    ]);
+    speed.set_selected(3);
+    speed.set_tooltip_text(Some("애니메이션 재생 속도 (0.25×~4×)"));
+    animation_controls.append(&frame_previous);
+    animation_controls.append(&frame_next);
+    animation_controls.append(&play_pause);
+    animation_controls.append(&gtk::Label::new(Some("속도")));
+    animation_controls.append(&speed);
+    toolbar.append(&animation_controls);
     root.append(&toolbar);
     root.append(&scroll);
     window.set_child(Some(&root));
@@ -732,12 +1028,58 @@ fn build(
         closing: Cell::new(false),
         reload_timer: RefCell::new(None),
         loading_timer: RefCell::new(None),
+        animation_timer: RefCell::new(None),
+        animation_view: Cell::new(View::default()),
+        playback: Cell::new(Playback::default()),
+        frame_status,
+        frame_previous,
+        frame_next,
+        play_pause,
+        speed,
         smoke,
+        smoke_animation: matches!(mode, SmokeMode::Animation | SmokeMode::AnimationControls),
+        smoke_controls: mode == SmokeMode::AnimationControls,
+        smoke_animation_frames: Cell::new(0),
         smoke_steps: Cell::new(smoke_navigation.then_some(500)),
         smoke_started: Cell::new(false),
         smoke_ok,
     });
     ui.update_navigation();
+    ui.update_playback();
+    {
+        let weak = Rc::downgrade(&ui);
+        ui.frame_previous.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.step_frame(false);
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.frame_next.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.step_frame(true);
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.play_pause.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.toggle_playback();
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.speed.connect_selected_notify(move |combo| {
+            if let Some(ui) = weak.upgrade()
+                && let Some(value) = ncat_presentation::playback::SPEEDS
+                    .get(combo.selected() as usize)
+                    .copied()
+            {
+                let mut state = ui.playback.get();
+                state.set_speed(value);
+                ui.playback.set(state);
+                ui.update_playback();
+                ui.schedule_animation();
+            }
+        });
+    }
     {
         let weak = Rc::downgrade(&ui);
         network.connect_clicked(move |_| {
@@ -889,6 +1231,9 @@ fn build(
                 ui.interface_has_input(),
             );
             match action {
+                Command::FramePrevious => ui.step_frame(false),
+                Command::FrameNext => ui.step_frame(true),
+                Command::Playback => ui.toggle_playback(),
                 Command::Native => return glib::Propagation::Proceed,
                 Command::Block => {}
                 Command::Open { folder } => ui.dialog(folder),
@@ -1187,8 +1532,16 @@ pub fn run(resolve_network: network::Resolver) -> glib::ExitCode {
     let smoke_navigation = first
         .as_ref()
         .is_some_and(|value| value == "--smoke-navigation");
+    let smoke_animation = first
+        .as_ref()
+        .is_some_and(|value| value == "--smoke-animation");
+    let smoke_controls = first
+        .as_ref()
+        .is_some_and(|value| value == "--smoke-animation-controls");
     let smoke = smoke_empty
         || smoke_navigation
+        || smoke_animation
+        || smoke_controls
         || first.as_ref().is_some_and(|value| value == "--smoke-test");
     let initial = if smoke_empty {
         None
@@ -1209,9 +1562,19 @@ pub fn run(resolve_network: network::Resolver) -> glib::ExitCode {
             build(
                 app,
                 initial.clone(),
-                smoke,
-                smoke_empty,
-                smoke_navigation,
+                if smoke_controls {
+                    SmokeMode::AnimationControls
+                } else if smoke_animation {
+                    SmokeMode::Animation
+                } else if smoke_navigation {
+                    SmokeMode::Navigation
+                } else if smoke_empty {
+                    SmokeMode::Empty
+                } else if smoke {
+                    SmokeMode::Frame
+                } else {
+                    SmokeMode::None
+                },
                 smoke_ok.clone(),
                 resolve_network,
             )
@@ -1228,6 +1591,13 @@ pub fn run(resolve_network: network::Resolver) -> glib::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn punctuation_keys_normalize_to_frame_controls() {
+        use ncat_presentation::input::Key;
+        assert_eq!(input::key(gdk::Key::comma), Key::FramePrevious);
+        assert_eq!(input::key(gdk::Key::period), Key::FrameNext);
+        assert_eq!(input::key(gdk::Key::slash), Key::Playback);
+    }
 
     #[test]
     fn drop_accepts_one_local_file_or_folder_without_inspecting_the_filesystem() {

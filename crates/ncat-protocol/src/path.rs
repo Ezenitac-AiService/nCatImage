@@ -1,5 +1,6 @@
 //! Same-host IPC path encoding, NOT a cross-platform persisted path format.
-//! Wire v1 preserves Unix bytes, including non-UTF-8 names. A Windows port must
+//! The native path representation (retained from wire v1) preserves Unix bytes,
+//! including non-UTF-8 names. A Windows port must
 //! define and validate a lossless native encoding and update the wire contract.
 use serde::{Deserialize, Serialize};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};

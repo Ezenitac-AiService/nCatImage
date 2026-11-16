@@ -706,7 +706,7 @@ fn basic_static_codecs_use_the_same_worker_boundary() {
 }
 
 #[test]
-fn animated_gif_only_returns_first_composited_frame() {
+fn animated_gif_initial_request_returns_first_composited_frame() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("animated.gif");
     {

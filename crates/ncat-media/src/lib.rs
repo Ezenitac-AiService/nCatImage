@@ -13,6 +13,15 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+mod animation;
+use animation::AnimationSession;
+
+#[derive(Clone, Copy)]
+struct RenderSpec {
+    width: u32,
+    height: u32,
+    quarter_turns: u8,
+}
 
 trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
@@ -68,6 +77,7 @@ enum Source {
     },
 }
 pub struct Book {
+    animation: RefCell<Option<AnimationSession>>,
     source: Source,
     pub pages: Vec<Page>,
     pub selected: usize,
@@ -77,9 +87,18 @@ pub struct Book {
 
 fn image_hint(name: &[u8]) -> bool {
     let ext = name.rsplit(|c| *c == b'.').next().unwrap_or_default();
-    [b"jpg".as_slice(), b"jpeg", b"png", b"bmp", b"gif", b"webp"]
-        .iter()
-        .any(|x| ext.eq_ignore_ascii_case(x))
+    [
+        b"jpg".as_slice(),
+        b"jpeg",
+        b"png",
+        b"apng",
+        b"bmp",
+        b"gif",
+        b"agif",
+        b"webp",
+    ]
+    .iter()
+    .any(|x| ext.eq_ignore_ascii_case(x))
 }
 
 fn label(bytes: &[u8]) -> String {
@@ -108,6 +127,7 @@ impl Book {
         let meta = fs::metadata(path).map_err(|_| Error::Io)?;
         if meta.is_dir() {
             let mut book = Self {
+                animation: RefCell::new(None),
                 source: Source::Folder {
                     root: path.into(),
                     initial: None,
@@ -131,6 +151,7 @@ impl Book {
             file.seek(SeekFrom::Start(0)).map_err(|_| Error::Io)?;
             let archive = zip::ZipArchive::new(file).map_err(|_| Error::Corrupt)?;
             let mut book = Self {
+                animation: RefCell::new(None),
                 source: Source::Zip {
                     path: path.into(),
                     revision,
@@ -152,6 +173,7 @@ impl Book {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         Ok(Self {
+            animation: RefCell::new(None),
             source: Source::Folder {
                 root: root.into(),
                 initial: Some(path.into()),
@@ -348,6 +370,7 @@ impl Book {
         workspace: u64,
         quarter_turns: u8,
     ) -> Result<FrameInfo, Error> {
+        self.animation.borrow_mut().take();
         let start = Instant::now();
         if max_width == 0
             || max_height == 0
@@ -396,50 +419,98 @@ impl Book {
             return Err(Error::Limit);
         }
         let orientation = decoder.orientation().map_err(|_| Error::Corrupt)?;
+        let view = RenderSpec {
+            width: max_width,
+            height: max_height,
+            quarter_turns,
+        };
+        if matches!(
+            format,
+            ImageFormat::Gif | ImageFormat::Png | ImageFormat::WebP
+        ) && let Some(session) =
+            AnimationSession::start(self, key, output, format, orientation, view, workspace)?
+        {
+            drop(decoder);
+            *self.animation.borrow_mut() = Some(session);
+            return self.animation_next(output)?.ok_or(Error::Corrupt);
+        }
         let mut decoded = image::DynamicImage::from_decoder(decoder).map_err(|_| Error::Corrupt)?;
         decoded.apply_orientation(orientation);
-        let mut decoded = match quarter_turns {
-            1 => decoded.rotate90(),
-            2 => decoded.rotate180(),
-            3 => decoded.rotate270(),
-            _ => decoded,
-        };
-        let (original_width, original_height) = (decoded.width(), decoded.height());
-        let (mut w, mut h) =
-            fit_size(original_width, original_height, max_width, max_height).ok_or(Error::Limit)?;
-        if rgba_len(w, h).ok_or(Error::Limit)? > MAX_OUTPUT {
-            let ratio = (MAX_OUTPUT as f64 / rgba_len(w, h).ok_or(Error::Limit)? as f64).sqrt();
-            w = (f64::from(w) * ratio).floor().max(1.0) as u32;
-            h = (f64::from(h) * ratio).floor().max(1.0) as u32;
-        }
-        if (w, h) != (original_width, original_height) {
-            decoded = decoded.resize_exact(w, h, FilterType::Triangle);
-        }
-        let rgba = decoded.into_rgba8();
-        let bytes = rgba_len(w, h).ok_or(Error::Limit)?;
-        if bytes > MAX_OUTPUT || rgba.as_raw().len() as u64 != bytes {
-            return Err(Error::Limit);
-        }
         if Revision::read(&source_path)? != revision {
             return Err(Error::Changed);
         }
-        let mut out = ncat_platform::open_pixel_output(output).map_err(|_| Error::Io)?;
-        if !out.metadata().map_err(|_| Error::Io)?.is_file() {
-            return Err(Error::Protocol);
-        }
-        out.write_all(rgba.as_raw()).map_err(|_| Error::Io)?;
-        out.flush().map_err(|_| Error::Io)?;
-        Ok(FrameInfo {
-            width: w,
-            height: h,
-            original_width,
-            original_height,
-            stride: u64::from(w) * 4,
-            bytes,
-            format: format!("{format:?}"),
-            elapsed_us: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
-        })
+        render(decoded, output, view, format, None, start)
     }
+
+    pub fn animation_next(&self, output: &Path) -> Result<Option<FrameInfo>, Error> {
+        let mut session = self.animation.borrow_mut().take().ok_or(Error::Protocol)?;
+        let result = session.next(self, output);
+        if result.is_ok() {
+            *self.animation.borrow_mut() = Some(session);
+        }
+        result
+    }
+
+    pub fn animation_seek(&self, output: &Path, index: u32) -> Result<Option<FrameInfo>, Error> {
+        if index >= ncat_protocol::MAX_ANIMATION_FRAMES {
+            return Err(Error::Limit);
+        }
+        let mut session = self.animation.borrow_mut().take().ok_or(Error::Protocol)?;
+        let result = session.seek(self, output, index);
+        if result.is_ok() {
+            *self.animation.borrow_mut() = Some(session);
+        }
+        result
+    }
+}
+
+fn render(
+    decoded: image::DynamicImage,
+    output: &Path,
+    view: RenderSpec,
+    format: ImageFormat,
+    animation: Option<ncat_protocol::AnimationInfo>,
+    start: Instant,
+) -> Result<FrameInfo, Error> {
+    let mut decoded = match view.quarter_turns {
+        1 => decoded.rotate90(),
+        2 => decoded.rotate180(),
+        3 => decoded.rotate270(),
+        _ => decoded,
+    };
+    let (original_width, original_height) = (decoded.width(), decoded.height());
+    let (mut w, mut h) =
+        fit_size(original_width, original_height, view.width, view.height).ok_or(Error::Limit)?;
+    if rgba_len(w, h).ok_or(Error::Limit)? > MAX_OUTPUT {
+        let ratio = (MAX_OUTPUT as f64 / rgba_len(w, h).ok_or(Error::Limit)? as f64).sqrt();
+        w = (f64::from(w) * ratio).floor().max(1.0) as u32;
+        h = (f64::from(h) * ratio).floor().max(1.0) as u32;
+    }
+    if (w, h) != (original_width, original_height) {
+        decoded = decoded.resize_exact(w, h, FilterType::Triangle);
+    }
+    let rgba = decoded.into_rgba8();
+    let bytes = rgba_len(w, h).ok_or(Error::Limit)?;
+    if bytes > MAX_OUTPUT || rgba.as_raw().len() as u64 != bytes {
+        return Err(Error::Limit);
+    }
+    let mut out = ncat_platform::open_pixel_output(output).map_err(|_| Error::Io)?;
+    if !out.metadata().map_err(|_| Error::Io)?.is_file() {
+        return Err(Error::Protocol);
+    }
+    out.write_all(rgba.as_raw()).map_err(|_| Error::Io)?;
+    out.flush().map_err(|_| Error::Io)?;
+    Ok(FrameInfo {
+        width: w,
+        height: h,
+        original_width,
+        original_height,
+        stride: u64::from(w) * 4,
+        bytes,
+        format: format!("{format:?}"),
+        elapsed_us: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+        animation,
+    })
 }
 
 #[cfg(test)]

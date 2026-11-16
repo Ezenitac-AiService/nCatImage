@@ -2,6 +2,9 @@
 //! values (including Command vs Control) before calling this policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
+    FramePrevious,
+    FrameNext,
+    Playback,
     Open,
     Network,
     Quit,
@@ -34,6 +37,9 @@ pub struct Modifiers {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    FramePrevious,
+    FrameNext,
+    Playback,
     Native,
     Block,
     Open { folder: bool },
@@ -73,6 +79,14 @@ pub fn command(key: Key, modifiers: Modifiers, controls_have_input: bool) -> Com
         K::ToggleInterface => return C::ToggleInterface,
         _ => {}
     }
+    if !modifiers.primary && !modifiers.alternate && !modifiers.system {
+        match key {
+            K::FramePrevious => return C::FramePrevious,
+            K::FrameNext => return C::FrameNext,
+            K::Playback => return C::Playback,
+            _ => {}
+        }
+    }
     if controls_have_input {
         return C::Native;
     }
@@ -104,6 +118,27 @@ pub fn command(key: Key, modifiers: Modifiers, controls_have_input: bool) -> Com
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frame_commands_work_with_toolbar_focus_but_not_os_modifiers() {
+        for (key, expected) in [
+            (Key::FramePrevious, Command::FramePrevious),
+            (Key::FrameNext, Command::FrameNext),
+            (Key::Playback, Command::Playback),
+        ] {
+            assert_eq!(command(key, Modifiers::default(), true), expected);
+            assert_eq!(
+                command(
+                    key,
+                    Modifiers {
+                        primary: true,
+                        ..Modifiers::default()
+                    },
+                    true
+                ),
+                Command::Native
+            );
+        }
+    }
 
     #[test]
     fn editing_preserves_native_keys_but_not_window_shortcuts() {

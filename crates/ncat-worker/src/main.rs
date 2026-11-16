@@ -99,6 +99,16 @@ fn run() -> io::Result<()> {
                     )
                 })
                 .map(|frame| Some(Response::Frame(frame))),
+            Request::AnimationNext { output } => book
+                .as_ref()
+                .ok_or(ErrorCode::Protocol)
+                .and_then(|book| book.animation_next(&output.path()))
+                .map(|frame| Some(frame.map_or(Response::AnimationEnded, Response::Frame))),
+            Request::AnimationSeek { output, index } => book
+                .as_ref()
+                .ok_or(ErrorCode::Protocol)
+                .and_then(|book| book.animation_seek(&output.path(), index))
+                .map(|frame| Some(frame.map_or(Response::AnimationEnded, Response::Frame))),
             Request::Shutdown => {
                 write_message(&mut output, &Envelope::new(message.id, Response::Bye))?;
                 break;

@@ -11,6 +11,8 @@ ncat-protocol.workspace = true
 ncat-platform.workspace = true
 
 [dev-dependencies]
+png = "0.18.1"
+gif = "0.14.2"
 ncat-backend.workspace = true
 ncat-core.workspace = true
 image.workspace = true

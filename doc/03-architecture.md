@@ -48,6 +48,10 @@ tests/corpus/     재배포 가능한 경계 파일·hash·생성기
 
 ## 4. 요청·큐·버전
 
+프레임 UI는 `AnimationSeek`로 이전 프레임을 요청하며 worker가 동일한 예약 안에서 처음부터 해당 프레임까지 합성/폐기한다. pause·배속은 presentation 정책과 GTK one-shot timer에서 처리하고 미리 디코딩 큐는 추가하지 않는다. finite 종료 후에도 이전/재시작을 위해 session을 유지하며 다음 페이지·취소·종료에서 해제한다.
+
+미릴리스 wire v2는 `AnimationNext`/`AnimationEnded`와 프레임 timing metadata를 추가한다. 최초 decode가 애니메이션이면 worker의 iterator/합성 canvas를 유지하고 parent `Permit`도 함께 유지한다. GTK는 표시한 프레임의 delay 뒤 one-shot timer로 다음 프레임 하나만 요청한다. 정상 정지 페이지에는 재생 timer가 없고, 전 프레임 수집/무한 predecode 큐는 없다. 애니메이션은 static LRU에 넣지 않으며 재생 중 인접 prefetch를 만들지 않는다. 새 페이지/보기는 기존 worker session을 회수해 새로 시작한다. GUI와 worker를 같은 wire 버전으로 배포해야 한다.
+
 | 종류 | 초기 한도/동작 |
 |---|---|
 | 사용자 open/선택/view 상태 | 종류별 최신 1개로 병합 |

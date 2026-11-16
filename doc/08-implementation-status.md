@@ -6,6 +6,15 @@
 
 ### 미릴리스: 포팅 준비 리팩터링
 
+#### 애니메이션 후속 구현
+
+- GIF/AGIF·WebP·APNG 순차 자동 재생을 worker→backend→GTK에 연결했다. 별도 APNG default 이미지 제외, 합성/disposal·지연·유한/무한 반복을 처리한다. `.png` APNG와 ZIP/CBZ 내부 입력도 같다.
+- wire v2, parent 수명의 persistent workspace 예약, 프레임 한 개씩 요청하는 one-shot timer를 사용한다. 정지 cache/prefetch와 분리하며 이전 source/view/close의 재생을 무효화한다.
+- 프레임 UI 후속 변경: 타이틀바 프레임/총수·상태·배속, 이전(`,`)/다음(`.`)/재생·일시정지(`/`) 버튼과 0.25×~4× dropdown을 추가했다. 총수는 주기 완료 후 확인하며 역방향은 bounded worker 재합성이다. finite 종료 후 세션을 유지해 이전/재시작을 지원하고 취소·페이지 변경·종료에서 해제한다.
+- Rust 테스트 **80개 통과**, 기존 수동 장기 1개 ignored. 신규 애니메이션 통합 10개는 색/지연/반복·disposal·예산/원본/lease·ZIP/회전·취소·손상 후 복구·이전 seek/종료 후 재시작을 검사한다. 키 정규화·modifier/focus 우선순위·배속/프레임 총수 정책도 단위 검사한다. fmt·Clippy·release 빌드·actionlint가 통과했다.
+- 최종 release 빌드의 실제 Linux GTK(Cairo)에서 GIF/AGIF/WebP/APNG/PNG/CBZ와 단발 GIF 재생 7개 및 scripted GTK 컨트롤(일시정지 유지·이전/다음·2배속·종료 후 재시작·타이틀) 검사 **8개 모두 통과**했다. 실물 corpus·정확한 compositor FPS·원격 재생·Windows/macOS 및 실제 OS 키 입력 주입은 미검증이다.
+- 최초 애니메이션/UI 구현 후 후속 사용자 요청으로 커밋·푸시·workspace release 빌드와 Linux AppImage 패키지 작업을 실행한다. 버전은 유지하고 기존 GitHub v0.4.3 Release/태그는 덮어쓰지 않는다. 새 소스 기반 Actions 패키지와 과거 0.4.3 정지-only 배포본을 구분한다.
+
 - 후속 배포 요청으로 `ncat-desktop` 로컬 진입점을 추가해 현재 workspace는 10개 crate다. AppImage/Windows portable ZIP/macOS arm64 DMG workflow와 스크립트를 추가했다. Windows/macOS는 readiness gate에서 차단된다. 정의 추가와 실행 가능한 세 OS 배포 완료를 구분한다.
 - 배포 준비 로컬 검증: Rust 65개(장기 1개 ignored), Python release gate/체크섬 테스트 5개, fmt·Clippy·workspace release 빌드·actionlint 문법 검사 통과. native Windows/macOS 패키징/실행은 아직 미검증이다.
 - 이전 작업의 “커밋·푸시·빌드 미실행” 상태와 달리 이번에는 사용자 요청에 따라 변경 전체를 커밋·푸시하고 수동 Distribution packages 작업을 실행한다. 새 버전/태그/공개 Release는 만들지 않는다. 실행 결과는 작업 보고 및 Actions 기록을 기준으로 한다.
@@ -49,7 +58,7 @@
 | R02 | 자연 정렬·이전/다음/첫/끝·번호·다시 열기 | 검색·역순·새로고침의 선택 유지 |
 | R03 | 좌우 키 RTL/LTR, core spread 함수/테스트 | 실제 두 장 UI·표지/가로 메타 조정 |
 | R04 | 전체 맞춤·중앙 확대 preview·native scroll/drag pan | 폭/높이/1:1·pointer anchor·최소 줌/소형 확대 옵션·고해상도 업그레이드/타일 |
-| R05 | JPEG/PNG/BMP/WebP 정지·GIF 첫 합성 frame·ZIP/CBZ 합성 입력 회귀 | ICC/CMYK 정확성·EXIF 전체 corpus·RAR·실물 형식/방법별 인증 |
+| R05 | JPEG/PNG/BMP/WebP 정지·GIF 및 미릴리스 GIF/AGIF/WebP/APNG 재생·ZIP/CBZ 합성 입력 회귀 | ICC/CMYK 정확성·EXIF 전체 corpus·RAR·실물 형식/방법별 인증 |
 | R06 | 화면 회전·파일 불변 테스트 | 추가 감상 변환은 범위별 별도 구현 |
 | R07 | 파일 이름/번호·상단 조작·백틱 토글·전체화면 숨김/복귀 | 시간 기반 auto-hide·thumbnail strip·전체 UX 정리 |
 | R08 | 기록을 전혀 저장하지 않음 | opt-in/최근 책/이어보기·원자 저장/삭제 전체 |

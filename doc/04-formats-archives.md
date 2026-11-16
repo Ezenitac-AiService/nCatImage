@@ -28,6 +28,14 @@ v0.4.3 · 2026-11-16. 신규 네트워크 입력은 코덱/압축 지원 형식�
 
 ### 애니메이션 경계
 
+**미릴리스 소스의 변경:** 사용자 요청으로 아래 과거 정지-only 범위를 확장했다. GIF/AGIF·WebP·APNG는 기본 자동 재생하며 APNG의 별도 default 이미지는 애니메이션 프레임에 포함하지 않는다. `.gif/.agif/.webp/.apng/.png` 후보 이름을 지원하되 실제 codec 판별은 signature로 한다. 폴더/ZIP/CBZ도 동일하다.
+
+- worker가 codec의 합성/disposal 처리를 이용해 순차 프레임을 반환한다. WebP는 transparent background clearing을 명시적으로 켜서 이전 프레임 잔상을 방지한다.
+- GIF 첫 이미지 앞 Netscape repeat는 추가 반복 횟수로 해석하고 extension이 없으면 한 번 재생한다. APNG/WebP는 파일의 총 play count를 사용하며 0은 무한 반복이다.
+- delay는 올림한 ms 값을 10~60,000ms로 제한하며 주기당 10,000프레임을 넘으면 Limit다. 큰 canvas/복잡한 입력은 기존 크기·메모리·timeout 제한으로 거부될 수 있다.
+- 전 프레임 collect·전체 decoded animation cache를 만들지 않는다. 일시정지·이전/다음 프레임·0.25×~4× 배속 UI를 제공한다. 이전 프레임은 처음부터 다시 합성하며 decode timeout/입력 제한을 그대로 적용한다. 속도는 파일 delay에 대한 배율이며 정확한 compositor 제시 간격/FPS 보장은 아니다.
+- 아래 P0/P1 정지-only 설명은 최초 배포 목표/0.4.3 이력이며 현재 소스의 재생 기능과 구분한다.
+
 - P0/P1 기본 제품은 정지 코믹 감상이다. GIF/WebP는 첫 합성 frame만, APNG는 정지 default image가 있으면 그 이미지를, 없으면 첫 합성 frame을 표시하는 경로를 검증한다. APNG 판별/정지 표시를 독립 capability로 기록한다.
 - 전체 frame을 읽고 처음만 쓰지 않는다. animated AVIF/JXL은 정지 표시 경로도 별도 corpus 없이 지원으로 표기하지 않는다.
 - 재생은 P2 별도 기능이다. 활성화 시 합성 canvas·restore 상태·timeline·loop·sliding window·최소 지연·중간 오류·반복 재디코딩 비용을 새 명세/게이트로 승인한다. 현재 192MiB 정책에 전체 animation cache를 미리 넣지 않는다.
@@ -77,4 +85,4 @@ v0.4.3 · 2026-11-16. 신규 네트워크 입력은 코덱/압축 지원 형식�
 | SMB / SFTP URI | 같은 OS 브리지 | 모의 D-Bus의 라우팅·드롭·표시·취소 확인; 실제 서버 인증은 미검증 |
 | GNOME GVfs | GIO 원격 백엔드와 FUSE 필요 | 구현됨; 전체 end-to-end 및 AppImage/시스템 모듈 조합 미검증 |
 
-프로토콜 인증·호스트 키·캐시·재연결은 OS 도구에 맡긴다. FTP는 평문이며 HTTP/WebDAV/FTPS는 범위 밖이다. 앱은 네트워크 책을 통째로 RAM에 읽거나 미지원 형식을 외부 실행 파일로 우회하지 않는다. OS 도구는 seek를 위해 파일 전체를 별도 캐시할 수 있다. 로컬·원격 모두 현재 정지 JPEG/PNG/BMP/WebP·GIF 첫 frame과 ZIP/CBZ의 제한이 같다.
+프로토콜 인증·호스트 키·캐시·재연결은 OS 도구에 맡긴다. FTP는 평문이며 HTTP/WebDAV/FTPS는 범위 밖이다. 앱은 네트워크 책을 통째로 RAM에 읽거나 미지원 형식을 외부 실행 파일로 우회하지 않는다. OS 도구는 seek를 위해 파일 전체를 별도 캐시할 수 있다. 로컬·원격은 같은 worker 형식 경로를 사용하지만 이번 애니메이션 검증은 로컬/합성 ZIP이며 원격 재생 성능은 미검증이다.

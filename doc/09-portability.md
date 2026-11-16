@@ -29,7 +29,7 @@ ncat-worker                  IPC dispatch
 | `ncat-linux` | Linux 전용 실행/연결 서비스 | 새 실행 crate와 OS 네트워크·인증 어댑터 |
 | `ncat-platform/src/unix.rs` | Unix identity·권한·open 구현 | Windows file ID/change time·ACL·reparse-point 방어/공유 모드 |
 | `ncat-platform/src/linux.rs` | Linux worker 보호 | macOS/Windows 보호 계약·부모 종료 연동·자원 제한 |
-| `ncat-protocol/src/path.rs` | Unix raw bytes wire v1 | Windows 무손실 native 경로 인코딩·검증·wire 계약 |
+| `ncat-protocol/src/path.rs` | Unix raw bytes (wire v1 표현 유지, 현재 제어 wire v2) | Windows 무손실 native 경로 인코딩·검증·wire 계약 |
 | `packaging/linux`, desktop tools | Linux 전용 | 서명·설치·파일 연결·OS별 배포·desktop 시험 |
 
 ## GUI 경계

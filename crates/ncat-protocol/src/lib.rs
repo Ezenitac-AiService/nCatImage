@@ -5,7 +5,10 @@ use std::io::{self, Read, Write};
 mod path;
 pub use path::RawPath;
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
+pub const MAX_ANIMATION_FRAMES: u32 = 10_000;
+pub const MIN_FRAME_DELAY_MS: u32 = 10;
+pub const MAX_FRAME_DELAY_MS: u32 = 60_000;
 pub const MAX_MESSAGE: usize = 256 * 1024;
 pub const MAX_ENTRIES: usize = 100_000;
 pub const INDEX_BYTES: u64 = 24 * 1024 * 1024;
@@ -74,6 +77,13 @@ pub enum Request {
         workspace: u64,
         quarter_turns: u8,
     },
+    AnimationNext {
+        output: RawPath,
+    },
+    AnimationSeek {
+        output: RawPath,
+        index: u32,
+    },
     Shutdown,
 }
 
@@ -108,6 +118,23 @@ impl std::fmt::Display for ErrorCode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AnimationInfo {
+    pub index: u32,
+    pub cycle: u32,
+    pub delay_ms: u32,
+    /// Persistent decoder/compositing reservation, retained by the parent.
+    pub workspace_bytes: u64,
+}
+
+impl AnimationInfo {
+    pub fn valid(&self) -> bool {
+        self.index < MAX_ANIMATION_FRAMES
+            && (MIN_FRAME_DELAY_MS..=MAX_FRAME_DELAY_MS).contains(&self.delay_ms)
+            && (DECODE_OVERHEAD..=WORKER_ADDRESS_SPACE).contains(&self.workspace_bytes)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrameInfo {
     pub width: u32,
     pub height: u32,
@@ -117,6 +144,7 @@ pub struct FrameInfo {
     pub bytes: u64,
     pub format: String,
     pub elapsed_us: u64,
+    pub animation: Option<AnimationInfo>,
 }
 impl FrameInfo {
     pub fn valid(&self) -> bool {
@@ -131,6 +159,7 @@ impl FrameInfo {
             && self.stride.checked_mul(u64::from(self.height)) == Some(self.bytes)
             && self.bytes <= MAX_OUTPUT
             && self.format.len() <= 32
+            && self.animation.as_ref().is_none_or(AnimationInfo::valid)
     }
 }
 
@@ -146,6 +175,7 @@ pub enum Response {
         done: bool,
     },
     Frame(FrameInfo),
+    AnimationEnded,
     Error(ErrorCode),
     Bye,
 }
@@ -191,6 +221,37 @@ pub fn read_message<T: for<'de> Deserialize<'de>>(
 mod tests {
     use super::*;
     #[test]
+    fn animation_timing_and_workspace_are_bounded() {
+        let info = AnimationInfo {
+            index: 0,
+            cycle: 0,
+            delay_ms: 10,
+            workspace_bytes: DECODE_OVERHEAD,
+        };
+        assert!(info.valid());
+        assert!(
+            !AnimationInfo {
+                delay_ms: 0,
+                ..info.clone()
+            }
+            .valid()
+        );
+        assert!(
+            !AnimationInfo {
+                index: MAX_ANIMATION_FRAMES,
+                ..info.clone()
+            }
+            .valid()
+        );
+        assert!(
+            !AnimationInfo {
+                workspace_bytes: WORKER_ADDRESS_SPACE + 1,
+                ..info
+            }
+            .valid()
+        );
+    }
+    #[test]
     fn bounded_and_versioned_messages() {
         let mut bytes = Vec::new();
         write_message(&mut bytes, &Envelope::new(7, Request::Catalog)).unwrap();
@@ -235,6 +296,7 @@ mod tests {
             bytes: 4,
             format: "Png".into(),
             elapsed_us: 0,
+            animation: None,
         };
         assert!(frame.valid());
         assert!(

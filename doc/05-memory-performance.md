@@ -10,6 +10,10 @@ v0.4.3 · 2026-11-16. 아래 초기 목표와 08의 과거 실측·현재 확인
 
 ## 1. 우선 제거할 비용
 
+일시정지 및 finite 재생 완료 상태에서도 이전 프레임/재시작을 위해 세션과 workspace 예약을 유지한다. 새 소스/페이지·취소·종료에서는 해제한다. 역방향 이동은 decoder를 다시 열어 요청 프레임까지 순차 합성/폐기하므로 cache는 늘지 않지만 CPU·입력 읽기·ZIP spool 비용이 들 수 있다. 처리 중 중복 step을 큐에 쌓지 않으며 배속은 0.25×~4×의 one-shot delay 조절이다.
+
+미릴리스 애니메이션은 canvas/합성/처리용 보수적 8×RGBA canvas + bounded 출력 작업 공간 + overhead를 admission에 사용한다. worker iterator가 살아 있는 동안 parent가 그 workspace 예약을 유지하며 화면 owner lease와 별도로 계산한다. 현재/다음 출력 이외의 모든 프레임을 캐시하지 않는다. 무한 반복 100회 요청의 예약 plateau와 취소/종료 후 반환을 회귀 검사했으나 실제 프로세스 RSS/FPS plateau 측정은 별도다.
+
 1. 원본/압축파일 전체 RAM 적재와 전체 책 선행 decode.
 2. 화면보다 큰 원본을 매번 GUI로 전달하는 copy/upload.
 3. 현재 선택과 무관한 prefetch/썸네일·zoom 중간 결과.

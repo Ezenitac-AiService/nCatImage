@@ -91,6 +91,9 @@ pub enum Event {
         generation: u64,
         code: ErrorCode,
     },
+    AnimationEnded {
+        generation: u64,
+    },
 }
 impl Event {
     pub fn generation(&self) -> u64 {
@@ -98,6 +101,7 @@ impl Event {
             Self::Catalog { generation, .. }
             | Self::Frame { generation, .. }
             | Self::Error { generation, .. } => *generation,
+            Self::AnimationEnded { generation } => *generation,
         }
     }
 }
@@ -111,6 +115,12 @@ enum Task {
         book: Arc<Book>,
         index: usize,
         view: View,
+    },
+    Animate {
+        book: Arc<Book>,
+        index: usize,
+        view: View,
+        seek: Option<u32>,
     },
 }
 struct Job {
@@ -286,6 +296,40 @@ impl Backend {
         }
         self.submit(Task::Load { book, index, view })
     }
+    /// Request one sequential frame, after the frontend's one-shot delay expires.
+    pub fn animation_next(
+        &self,
+        book: Arc<Book>,
+        index: usize,
+        view: View,
+    ) -> Result<u64, ErrorCode> {
+        if index >= book.pages.len() {
+            return Err(ErrorCode::Protocol);
+        }
+        self.submit(Task::Animate {
+            book,
+            index,
+            view,
+            seek: None,
+        })
+    }
+    pub fn animation_seek(
+        &self,
+        book: Arc<Book>,
+        index: usize,
+        view: View,
+        frame: u32,
+    ) -> Result<u64, ErrorCode> {
+        if index >= book.pages.len() || frame >= ncat_protocol::MAX_ANIMATION_FRAMES {
+            return Err(ErrorCode::Protocol);
+        }
+        self.submit(Task::Animate {
+            book,
+            index,
+            view,
+            seek: Some(frame),
+        })
+    }
     pub fn generation(&self) -> u64 {
         self.shared.generation.load(Ordering::Acquire)
     }
@@ -362,6 +406,9 @@ fn emit(
 }
 
 struct Worker {
+    animation_workspace: Option<Permit>,
+    animation_target: Option<Key>,
+    animation_generation: u64,
     child: Option<Child>,
     input: Option<BufWriter<ChildStdin>>,
     responses: mpsc::Receiver<io::Result<Envelope<Response>>>,
@@ -424,6 +471,9 @@ impl Worker {
             }
         };
         Ok(Self {
+            animation_workspace: None,
+            animation_target: None,
+            animation_generation: 0,
             child: Some(child),
             input: Some(input),
             responses,
@@ -447,6 +497,8 @@ impl Worker {
         }
         self.source = None;
         self.index_permit = None;
+        self.animation_workspace = None;
+        self.animation_target = None;
     }
 
     fn send(&mut self, request: Request) -> Result<u64, ErrorCode> {
@@ -634,6 +686,18 @@ impl Worker {
         shared: &Shared,
         guard: &WorkGuard,
     ) -> Result<Arc<Frame>, ErrorCode> {
+        self.decode_frame(page, view, shared, guard, None)?
+            .ok_or(ErrorCode::Protocol)
+    }
+
+    fn decode_frame(
+        &mut self,
+        page: &Page,
+        view: View,
+        shared: &Shared,
+        guard: &WorkGuard,
+        advance: Option<Option<u32>>,
+    ) -> Result<Option<Arc<Frame>>, ErrorCode> {
         if !guard.allowed(shared) {
             return Err(ErrorCode::Cancelled);
         }
@@ -642,11 +706,22 @@ impl Worker {
             .reserve(MAX_OUTPUT * ncat_protocol::PRESENTATION_COPIES)
             .ok_or(ErrorCode::Limit)?;
         let remaining = shared.budget.limit().saturating_sub(shared.budget.used());
-        let workspace = remaining.min(shared.options.workspace_bytes);
+        let workspace = if advance.is_some() {
+            self.animation_workspace
+                .as_ref()
+                .ok_or(ErrorCode::Protocol)?
+                .bytes()
+        } else {
+            remaining.min(shared.options.workspace_bytes)
+        };
         if workspace < ncat_protocol::DECODE_OVERHEAD {
             return Err(ErrorCode::Limit);
         }
-        let _work = shared.budget.reserve(workspace).ok_or(ErrorCode::Limit)?;
+        let mut work = if advance.is_some() {
+            None
+        } else {
+            Some(shared.budget.reserve(workspace).ok_or(ErrorCode::Limit)?)
+        };
         let directory = tempfile::Builder::new()
             .prefix("ncat-frame-")
             .tempdir()
@@ -654,14 +729,27 @@ impl Worker {
         let mut output =
             tempfile::NamedTempFile::new_in(directory.path()).map_err(|_| ErrorCode::Io)?;
         shared.stats.decodes.fetch_add(1, Ordering::Relaxed);
-        let id = self.send(Request::Decode {
-            key: page.key.clone(),
-            output: RawPath::new(output.path()),
-            max_width: view.width,
-            max_height: view.height,
-            workspace,
-            quarter_turns: view.quarter_turns,
-        })?;
+        let request = if let Some(seek) = advance {
+            match seek {
+                Some(index) => Request::AnimationSeek {
+                    output: RawPath::new(output.path()),
+                    index,
+                },
+                None => Request::AnimationNext {
+                    output: RawPath::new(output.path()),
+                },
+            }
+        } else {
+            Request::Decode {
+                key: page.key.clone(),
+                output: RawPath::new(output.path()),
+                max_width: view.width,
+                max_height: view.height,
+                workspace,
+                quarter_turns: view.quarter_turns,
+            }
+        };
+        let id = self.send(request)?;
         let info = match self.receive_guard(
             id,
             shared,
@@ -669,11 +757,25 @@ impl Worker {
             Instant::now() + shared.options.task_timeout,
         )? {
             Response::Frame(info) if info.valid() => info,
+            Response::AnimationEnded if advance.is_some() => return Ok(None),
             _ => {
                 self.stop();
                 return Err(ErrorCode::Protocol);
             }
         };
+        if let Some(animation) = &info.animation {
+            if animation.workspace_bytes > workspace {
+                self.stop();
+                return Err(ErrorCode::Protocol);
+            }
+            if let Some(mut reservation) = work.take() {
+                reservation.shrink_to(animation.workspace_bytes);
+                self.animation_workspace = Some(reservation);
+            }
+        } else if advance.is_some() {
+            self.stop();
+            return Err(ErrorCode::Protocol);
+        }
         // Read from the parent's original FD, never a worker-controlled response path.
         let file: &mut File = output.as_file_mut();
         if file.metadata().map_err(|_| ErrorCode::Io)?.len() != info.bytes {
@@ -693,11 +795,11 @@ impl Worker {
             return Err(ErrorCode::Cancelled);
         }
         display.shrink_to(info.bytes * ncat_protocol::PRESENTATION_COPIES);
-        Ok(Arc::new(Frame {
+        Ok(Some(Arc::new(Frame {
             info,
             pixels,
             _permit: display,
-        }))
+        })))
     }
 }
 
@@ -815,6 +917,13 @@ impl Engine {
         if !guard.allowed(shared) {
             return Err(ErrorCode::Cancelled);
         }
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|w| w.animation_workspace.is_some())
+        {
+            self.stop_worker();
+        }
         self.diagnostics.record(format!("stage=frame_request request_generation={} epoch={} background={} view={}x{} rotation={}", guard.generation, book.epoch, guard.prefetch, view.width, view.height, view.quarter_turns));
         let key = self.key(book, index, view, shared)?;
         if let Some((frame, prefetched)) = self.cache.get(&key) {
@@ -919,6 +1028,14 @@ impl Engine {
             self.incident("source_changed_during_decode", shared);
             return Err(ErrorCode::Changed);
         }
+        if frame.info.animation.is_some() {
+            if guard.prefetch {
+                self.stop_worker();
+            } else if let Some(worker) = self.worker.as_mut() {
+                worker.animation_target = Some(key.clone());
+                worker.animation_generation = guard.generation;
+            }
+        }
         {
             // Serialize insertion with new selections/open/close: no stale work resurrection.
             // Metadata I/O and decode are deliberately outside this short critical section.
@@ -926,9 +1043,10 @@ impl Engine {
             if !guard.allowed_locked(shared, &pending) {
                 return Err(ErrorCode::Cancelled);
             }
-            if self
-                .cache
-                .insert(key, frame.clone(), guard.prefetch, &shared.budget)
+            if frame.info.animation.is_none()
+                && self
+                    .cache
+                    .insert(key, frame.clone(), guard.prefetch, &shared.budget)
                 && guard.prefetch
             {
                 shared.stats.prefetches.fetch_add(1, Ordering::Relaxed);
@@ -952,7 +1070,14 @@ impl Engine {
             self.forward = index > previous;
         }
         self.previous = Some((book.epoch, index));
-        if !book.complete || !self.cache.enabled() || view.quarter_turns != 0 {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|w| w.animation_workspace.is_some())
+            || !book.complete
+            || !self.cache.enabled()
+            || view.quarter_turns != 0
+        {
             return None;
         }
         let adjacent = if self.forward {
@@ -978,6 +1103,13 @@ impl Engine {
         self.trace("foreground_job", shared);
         match job.task {
             Task::Open { path, view } => {
+                if self
+                    .worker
+                    .as_ref()
+                    .is_some_and(|w| w.animation_workspace.is_some())
+                {
+                    self.stop_worker();
+                }
                 self.trace("open_source_requested", shared);
                 self.cache.clear();
                 self.publish_cache_stats(shared);
@@ -1062,6 +1194,40 @@ impl Engine {
                 )?;
                 Ok(self.plan(book, index, view, generation))
             }
+            Task::Animate {
+                book,
+                index,
+                view,
+                seek,
+            } => {
+                let key = self.key(&book, index, view, shared)?;
+                let worker = self.worker.as_mut().ok_or(ErrorCode::Protocol)?;
+                if worker.animation_target.as_ref() != Some(&key) {
+                    return Err(ErrorCode::Cancelled);
+                }
+                let guard = WorkGuard::new(generation, None, false);
+                let next =
+                    worker.decode_frame(&book.pages[index], view, shared, &guard, Some(seek))?;
+                worker.animation_generation = generation;
+                if self.key(&book, index, view, shared)? != key {
+                    return Err(ErrorCode::Changed);
+                }
+                match next {
+                    Some(frame) => emit(
+                        sender,
+                        shared,
+                        Event::Frame {
+                            generation,
+                            frame,
+                            cached: false,
+                        },
+                    )?,
+                    None => {
+                        emit(sender, shared, Event::AnimationEnded { generation })?;
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -1126,6 +1292,7 @@ fn coordinator(
         Foreground(Job),
         Prefetch(PrefetchPlan),
         Diagnostics(VecDeque<DropEvent>),
+        StopAnimation,
     }
     loop {
         let work = {
@@ -1142,6 +1309,11 @@ fn coordinator(
                 if let Some(job) = pending.take() {
                     break Some(Work::Foreground(job));
                 }
+                if engine.worker.as_ref().is_some_and(|w| {
+                    w.animation_workspace.is_some() && !current(&shared, w.animation_generation)
+                }) {
+                    break Some(Work::StopAnimation);
+                }
                 if shared.prefetch_enabled.load(Ordering::Acquire)
                     && let Some(plan) = prefetch.take()
                 {
@@ -1152,6 +1324,7 @@ fn coordinator(
         };
         match work {
             None => break,
+            Some(Work::StopAnimation) => engine.stop_worker(),
             Some(Work::Diagnostics(events)) => {
                 for event in events {
                     engine

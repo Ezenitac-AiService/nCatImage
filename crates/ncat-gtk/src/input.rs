@@ -4,6 +4,9 @@ use ncat_presentation::input::Key;
 
 pub fn key(key: gdk::Key) -> Key {
     match key {
+        gdk::Key::comma => Key::FramePrevious,
+        gdk::Key::period => Key::FrameNext,
+        gdk::Key::slash => Key::Playback,
         gdk::Key::o | gdk::Key::O => Key::Open,
         gdk::Key::l | gdk::Key::L => Key::Network,
         gdk::Key::q | gdk::Key::Q => Key::Quit,

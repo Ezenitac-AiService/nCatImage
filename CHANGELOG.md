@@ -4,6 +4,16 @@
 
 ## 미릴리스 — Windows/macOS 포팅 준비
 
+### 애니메이션 재생
+
+- 타이틀바의 현재/전체 프레임·상태·배속 표시, 이전(`,`)/다음(`.`)/재생·일시정지(`/`) 버튼·단축키와 0.25×~4× 속도 선택을 추가했다. 전체 프레임 수는 첫 주기 완료 뒤 확인한다.
+- 이전 프레임은 bounded worker seek로 다시 합성한다. finite 재생 종료 뒤에도 예약된 세션을 유지해 이전 이동/재시작을 지원하고 새 페이지·취소·종료에서 해제한다. 모든 decoded frame을 저장하지 않는다.
+
+- GIF/AGIF·WebP·APNG의 합성 프레임 순차 재생, 지연·유한/무한 반복을 연결했다. `.png` APNG와 ZIP/CBZ 내부 입력도 같은 worker 경로를 사용한다.
+- persistent decoder/compositing workspace를 parent 예산에서 재생 수명 동안 예약하고, 애니메이션의 정지 cache 삽입·인접 prefetch를 억제한다. 이동/보기 변경·취소/종료는 이전 session을 해제한다.
+- wire v2에 다음 프레임/재생 종료·유한 timing metadata를 추가했다. GUI와 worker는 같은 소스 버전으로 함께 빌드해야 한다.
+- 합성 GIF/APNG disposal-previous, WebP 부분 프레임/background disposal, 반복·지연·예산/lease·원본 변경·ZIP/회전 회귀와 실제 GTK 7개 입력 재생 smoke를 추가했다. 전체 실물 형식·정확한 compositor FPS·일시정지/배속 UI 인증은 아니다.
+
 - OS별 Distribution packages workflow를 추가했다: Linux AppImage, Windows GTK/worker 동봉 포터블 ZIP, macOS arm64 `.app`/DMG. Windows 단일 EXE는 구현하지 않고 ZIP fallback을 선택했다.
 - native 포팅 readiness·태그/버전 검사·패키지 relocation smoke·체크섬·전 OS 성공 후 초안 릴리스 정책을 추가했다. 현재 Windows/macOS는 미구현 보호/파일 API 때문에 차단된다.
 - `ncat-desktop` 로컬 GTK 진입점과 배포 문서를 추가했다. 기존 CI의 Openbox 시작 경합은 WM 준비를 기다리도록 보완했다.

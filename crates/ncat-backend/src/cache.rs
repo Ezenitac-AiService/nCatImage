@@ -195,6 +195,7 @@ mod tests {
                 bytes: 4,
                 format: "Png".into(),
                 elapsed_us: 0,
+                animation: None,
             },
             _permit: budget.reserve(12).unwrap(),
         })

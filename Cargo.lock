@@ -743,12 +743,14 @@ dependencies = [
 name = "ncat-worker"
 version = "0.4.3"
 dependencies = [
+ "gif",
  "image",
  "ncat-backend",
  "ncat-core",
  "ncat-media",
  "ncat-platform",
  "ncat-protocol",
+ "png",
  "tempfile",
  "zip",
 ]

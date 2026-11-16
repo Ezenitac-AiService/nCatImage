@@ -11,7 +11,7 @@ cargo test --workspace --locked
 cargo build --workspace --release --locked
 ```
 
-배포된 0.4.3은 기본 테스트 56개이며, 미릴리스 포팅 분리 후 65개다. 수동 10,000회 수명 시험 1개는 ignored다. 툴킷·OS 독립 부분만 검사하려면 `cargo test -p ncat-core -p ncat-presentation --locked`를 사용한다. 수동 시험은 명시적으로 실행한다:
+배포된 0.4.3은 기본 테스트 56개이며, 미릴리스 포팅 분리 후 65개, 애니메이션/프레임 UI 추가 후 80개다. 수동 10,000회 수명 시험 1개는 ignored다. 툴킷·OS 독립 부분만 검사하려면 `cargo test -p ncat-core -p ncat-presentation --locked`를 사용한다. 수동 시험은 명시적으로 실행한다:
 
 ```bash
 cargo test -p ncat-worker --test pipeline ten_thousand_decodes_return_all_leases --locked -- --ignored
@@ -30,6 +30,23 @@ python3 tools/measure-smoke.py -- target/release/ncat-linux --smoke-navigation /
 생성 대상은 아직 없는 디렉터리여야 한다. `/tmp/opencode`가 없는 머신에서는 사용자 소유 임시 경로를 사용한다. `measure-smoke.py`의 RSS/PSS 샘플 peak·전체 실행 시간은 compositor 제시 지연·정확한 순간 peak·정식 p95가 아니다.
 
 ## 격리된 GUI·드롭·모의 네트워크 회귀
+
+### 애니메이션 회귀
+
+`crates/ncat-worker/tests/animation.rs`는 GIF/APNG와 RIFF WebP 합성 fixture를 자체 생성한다. finite/infinite loop·delay·APNG 별도 default 이미지·부분 프레임/disposal·예산·원본 변경·ZIP·회전·취소/lease를 검사한다. 전 프레임 collect 없이 순차 요청하며 무한 재생 100회 뒤에도 parent 예약이 증가하지 않는지 확인한다.
+
+실제 GTK frame 표시 수명 검사는 Pillow(WebP encoder 포함)가 필요하다. Ubuntu는 `python3-pil`을 설치한다:
+
+```bash
+GSK_RENDERER=cairo python3 tools/animation-smoke.py --image target/release/ncat-linux
+# 또는 전용 Xvfb:
+GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a dbus-run-session -- \
+  /usr/bin/python3 tools/animation-smoke.py --image target/release/ncat-linux
+```
+
+명시적 `--smoke-animation` 모드는 animation 입력의 실제 texture 설정/one-shot timer/다음 frame 요청을 최대 6프레임까지 확인하고 종료한다. finite 파일은 최소 2프레임 후 정상 종료도 허용한다. 소스 SHA256 불변도 확인하며 실측 compositor 제시 시간/FPS·실물 codec corpus 인증은 아니다. 일반 `--smoke-test`는 기존처럼 첫 프레임만 표시하고 종료한다.
+
+도구는 `--smoke-animation-controls`도 실행해 실제 GTK 버튼 signal과 속도 dropdown을 조작한다. 100ms 동안 pause 유지·다음 프레임·이전 seek·2× 속도·finite 종료 후 재시작·타이틀 문자열을 검증한다. OS 키 입력 주입 시험은 아니며 `, . /` 키 정규화와 포커스/modifier 정책은 Rust 단위 시험으로 별도 확인한다.
 
 Ubuntu 24.04 예시 의존성:
 
