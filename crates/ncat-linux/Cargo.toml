@@ -7,6 +7,5 @@ publish.workspace = true
 
 [dependencies]
 ncat-backend.workspace = true
-ncat-core.workspace = true
-ncat-protocol.workspace = true
+ncat-gtk.workspace = true
 gtk.workspace = true

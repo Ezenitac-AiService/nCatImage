@@ -1,0 +1,171 @@
+name: Distribution packages
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Build selection (no release is published by a manual build)"
+        type: choice
+        options: [all, linux, windows, macos]
+        default: all
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-${{ github.ref }}-${{ inputs.platform || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Native readiness and tag check
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 packaging/preflight.py linux ${RELEASE_TAG:+--tag "$RELEASE_TAG"}
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-4-dev librsvg2-dev librsvg2-bin \
+            curl ca-certificates file patchelf desktop-file-utils squashfs-tools python3 \
+            xvfb xauth dbus-x11 openbox xdotool python3-gi python3-pyatspi at-spi2-core fonts-dejavu-core
+      - run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - name: Build AppImage (pinned upstream tool checksums)
+        run: bash packaging/linux/build-appimage.sh
+      - name: Test the AppImage, not just the Cargo binary
+        shell: bash
+        run: |
+          image=("$GITHUB_WORKSPACE"/dist/*.AppImage)
+          GDK_BACKEND=x11 GTK_A11Y=atspi GTK_THEME=Adwaita GDK_SCALE=1 GSK_RENDERER=cairo \
+            xvfb-run -a -s '-screen 0 1280x1024x24' dbus-run-session -- \
+            env NCAT_PRIVATE_TEST_BUS=1 /usr/bin/python3 tools/desktop-regression.py --image "${image[0]}"
+      - run: python3 packaging/checksums.py dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distribution-linux
+          path: |
+            dist/*.AppImage
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  windows:
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Native readiness and tag check (currently blocked by the Windows port)
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          if ($env:RELEASE_TAG) {
+            python packaging/preflight.py windows --tag "$env:RELEASE_TAG"
+          } else {
+            python packaging/preflight.py windows
+          }
+          exit $LASTEXITCODE
+      - name: Rust GNU target
+        run: rustup target add x86_64-pc-windows-gnu
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-adwaita-icon-theme
+            mingw-w64-ucrt-x86_64-python
+      - name: Build portable ZIP with DLL dependency closure
+        shell: msys2 {0}
+        run: |
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
+          export NCAT_MINGW_PREFIX="$(cygpath -m "$MINGW_PREFIX")"
+          export PKG_CONFIG_PATH="$MINGW_PREFIX/lib/pkgconfig"
+          python packaging/windows/build-portable.py
+      - name: Relocated ZIP smoke without MSYS2 on PATH
+        shell: pwsh
+        run: |
+          $package = (Get-ChildItem dist/*-portable.zip).FullName
+          python packaging/smoke-package.py "$package"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/checksums.py dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distribution-windows
+          path: |
+            dist/*-portable.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  macos:
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Native readiness and tag check (currently blocked by worker protection)
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 packaging/preflight.py macos ${RELEASE_TAG:+--tag "$RELEASE_TAG"}
+      - run: brew install gtk4 adwaita-icon-theme dylibbundler pkg-config
+      - run: rustup show active-toolchain
+      - name: Build .app, bundle dylibs, ad-hoc sign and create DMG
+        run: python3 packaging/macos/build-dmg.py
+      - name: Read-only mounted DMG smoke without Homebrew on PATH
+        run: python3 packaging/smoke-package.py dist/*.dmg
+      - run: python3 packaging/checksums.py dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distribution-macos
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    # Never publish a partial three-OS release or overwrite a historical release.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: distribution-*
+          path: incoming
+      - name: Verify each runner's hashes and collect packages
+        run: |
+          mkdir dist
+          for directory in incoming/distribution-*; do
+            (cd "$directory" && sha256sum -c SHA256SUMS)
+            find "$directory" -maxdepth 1 -type f ! -name SHA256SUMS -exec cp -n {} dist/ \;
+          done
+          python3 packaging/checksums.py dist --require-all
+      - name: Create a draft preview for review, never update an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --prerelease \
+            --title "nCatImage $RELEASE_TAG" --notes-file packaging/RELEASE-NOTES.md

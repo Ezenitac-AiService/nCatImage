@@ -114,6 +114,8 @@ def main():
     app = None
     source = None
     try:
+        wait(lambda: "window id #" in command("xprop", "-root", "_NET_SUPPORTING_WM_CHECK"),
+             "window manager readiness")
         app, directory = launch("ui", inputs["book"])
         win = window()
         activate(win)

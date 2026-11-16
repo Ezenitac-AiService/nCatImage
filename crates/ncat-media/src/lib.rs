@@ -3,6 +3,7 @@
 
 use image::{ImageDecoder, ImageFormat, ImageReader, imageops::FilterType};
 use ncat_core::{fit_size, natural_cmp, rgba_len};
+use ncat_platform::{Revision, name_bytes};
 use ncat_protocol::{
     ErrorCode as Error, FrameInfo, INDEX_BYTES, MAX_ENTRIES, MAX_INPUT, MAX_OUTPUT, MAX_PIXELS,
     Page, PageKey, RawPath,
@@ -10,7 +11,6 @@ use ncat_protocol::{
 use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -53,35 +53,6 @@ impl<R: Seek> Seek for LimitedReader<R> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "input limit"));
         }
         Ok(position)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Revision {
-    dev: u64,
-    ino: u64,
-    len: u64,
-    mtime: (i64, i64),
-    ctime: (i64, i64),
-}
-impl Revision {
-    fn of(file: &File) -> Result<Self, Error> {
-        Self::metadata(&file.metadata().map_err(|_| Error::Io)?)
-    }
-    fn path(path: &Path) -> Result<Self, Error> {
-        Self::metadata(&fs::metadata(path).map_err(|_| Error::Io)?)
-    }
-    fn metadata(m: &fs::Metadata) -> Result<Self, Error> {
-        if !m.is_file() {
-            return Err(Error::Unsupported);
-        }
-        Ok(Self {
-            dev: m.dev(),
-            ino: m.ino(),
-            len: m.len(),
-            mtime: (m.mtime(), m.mtime_nsec()),
-            ctime: (m.ctime(), m.ctime_nsec()),
-        })
     }
 }
 
@@ -131,7 +102,7 @@ fn checked_catalog(pages: &[Page]) -> Result<(), Error> {
 
 impl Book {
     pub fn open(path: &Path) -> Result<Self, Error> {
-        if path.as_os_str().as_bytes().len() > ncat_protocol::MAX_PATH_BYTES {
+        if name_bytes(path.as_os_str()).len() > ncat_protocol::MAX_PATH_BYTES {
             return Err(Error::Limit);
         }
         let meta = fs::metadata(path).map_err(|_| Error::Io)?;
@@ -143,7 +114,7 @@ impl Book {
                 },
                 pages: Vec::new(),
                 selected: 0,
-                title: label(path.file_name().unwrap_or(path.as_os_str()).as_bytes()),
+                title: label(name_bytes(path.file_name().unwrap_or(path.as_os_str()))),
                 deferred: false,
             };
             book.catalog()?;
@@ -167,7 +138,7 @@ impl Book {
                 },
                 pages: Vec::new(),
                 selected: 0,
-                title: label(path.file_name().unwrap_or(path.as_os_str()).as_bytes()),
+                title: label(name_bytes(path.file_name().unwrap_or(path.as_os_str()))),
                 deferred: false,
             };
             book.catalog()?;
@@ -187,10 +158,10 @@ impl Book {
             },
             pages: vec![Page {
                 key: PageKey::File(RawPath::new(path)),
-                name: label(path.file_name().unwrap_or(path.as_os_str()).as_bytes()),
+                name: label(name_bytes(path.file_name().unwrap_or(path.as_os_str()))),
             }],
             selected: 0,
-            title: label(root.file_name().unwrap_or(root.as_os_str()).as_bytes()),
+            title: label(name_bytes(root.file_name().unwrap_or(root.as_os_str()))),
             deferred: true,
         })
     }
@@ -204,13 +175,13 @@ impl Book {
                     let entry = entry.map_err(|_| Error::Io)?;
                     let name = entry.file_name();
                     if !entry.file_type().map_err(|_| Error::Io)?.is_file()
-                        || !image_hint(name.as_bytes())
+                        || !image_hint(name_bytes(&name))
                     {
                         continue;
                     }
                     let page = Page {
                         key: PageKey::File(RawPath::new(&entry.path())),
-                        name: label(name.as_bytes()),
+                        name: label(name_bytes(&name)),
                     };
                     cost = cost.checked_add(page.cost()).ok_or(Error::Limit)?;
                     if pages.len() >= MAX_ENTRIES || cost > INDEX_BYTES / 2 {
@@ -223,12 +194,9 @@ impl Book {
                     if !pages.iter().any(|p| p.key == key) {
                         pages.push(Page {
                             key,
-                            name: label(
-                                initial
-                                    .file_name()
-                                    .unwrap_or(initial.as_os_str())
-                                    .as_bytes(),
-                            ),
+                            name: label(name_bytes(
+                                initial.file_name().unwrap_or(initial.as_os_str()),
+                            )),
                         });
                     }
                 }
@@ -250,7 +218,7 @@ impl Book {
                 revision,
                 archive,
             } => {
-                if &Revision::path(path)? != revision {
+                if &Revision::read(path)? != revision {
                     return Err(Error::Changed);
                 }
                 // Keep the already-parsed central directory and source handle for this book.
@@ -321,7 +289,7 @@ impl Book {
                 let path = raw.path();
                 let file = File::open(&path).map_err(|_| Error::Io)?;
                 let revision = Revision::of(&file)?;
-                if revision.len > MAX_INPUT {
+                if revision.size > MAX_INPUT {
                     return Err(Error::Limit);
                 }
                 Ok((Box::new(LimitedReader::new(file)), path, revision))
@@ -334,7 +302,7 @@ impl Book {
                 },
                 PageKey::Zip(index),
             ) => {
-                if &Revision::path(path)? != revision {
+                if &Revision::read(path)? != revision {
                     return Err(Error::Changed);
                 }
                 let mut archive = archive.borrow_mut();
@@ -452,16 +420,10 @@ impl Book {
         if bytes > MAX_OUTPUT || rgba.as_raw().len() as u64 != bytes {
             return Err(Error::Limit);
         }
-        if Revision::path(&source_path)? != revision {
+        if Revision::read(&source_path)? != revision {
             return Err(Error::Changed);
         }
-        let fd = rustix::fs::open(
-            output,
-            rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::TRUNC | rustix::fs::OFlags::NOFOLLOW,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|_| Error::Io)?;
-        let mut out = File::from(fd);
+        let mut out = ncat_platform::open_pixel_output(output).map_err(|_| Error::Io)?;
         if !out.metadata().map_err(|_| Error::Io)?.is_file() {
             return Err(Error::Protocol);
         }

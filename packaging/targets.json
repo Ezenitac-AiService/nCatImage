@@ -1,0 +1,32 @@
+{
+  "linux": {
+    "ready": true,
+    "format": "AppImage",
+    "architecture": "x86_64",
+    "gui": "ncat-linux",
+    "blockers": []
+  },
+  "windows": {
+    "ready": false,
+    "format": "portable.zip",
+    "architecture": "x86_64",
+    "gui": "ncat-desktop",
+    "blockers": [
+      "Lossless Windows native path IPC encoding and validation are not implemented",
+      "Windows file identity, private ACLs and reparse-point-safe output are not implemented",
+      "Windows worker resource protection and parent-exit handling are not implemented",
+      "Packaged GTK runtime relocation and local-file desktop smoke are not verified"
+    ]
+  },
+  "macos": {
+    "ready": false,
+    "format": "dmg",
+    "architecture": "arm64",
+    "gui": "ncat-desktop",
+    "blockers": [
+      "macOS worker resource protection and parent-exit handling are not implemented",
+      "Bundled GTK runtime relocation and local-file desktop smoke are not verified",
+      "Developer ID signing and notarization are not configured (preview builds may use ad-hoc signing)"
+    ]
+  }
+}

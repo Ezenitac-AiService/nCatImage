@@ -11,7 +11,7 @@ cargo test --workspace --locked
 cargo build --workspace --release --locked
 ```
 
-기본 테스트 56개, 수동 10,000회 수명 시험 1개 ignored다. 수동 시험은 명시적으로 실행한다:
+배포된 0.4.3은 기본 테스트 56개이며, 미릴리스 포팅 분리 후 65개다. 수동 10,000회 수명 시험 1개는 ignored다. 툴킷·OS 독립 부분만 검사하려면 `cargo test -p ncat-core -p ncat-presentation --locked`를 사용한다. 수동 시험은 명시적으로 실행한다:
 
 ```bash
 cargo test -p ncat-worker --test pipeline ten_thousand_decodes_return_all_leases --locked -- --ignored

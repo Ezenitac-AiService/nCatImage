@@ -13,6 +13,7 @@ jobs:
       - name: Install pinned Rust
         run: rustup show active-toolchain
       - run: cargo fmt --all -- --check
+      - run: python3 -m unittest discover -s packaging -p test_pipeline.py
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --release --locked

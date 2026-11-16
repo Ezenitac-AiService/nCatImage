@@ -5,9 +5,9 @@
 ## 목적과 범위
 
 - 제품은 가벼운 Rust 코믹뷰어다. 종합 사진 도구·편집기·라이브러리 관리자로 확장하지 않는다.
-- 종전 ImageViewer/WPF 이관·공용 GUI·OS별 셸 설계는 폐기했다. 코드 재사용/라이선스 관련 종전 추정을 새 사실로 가져오지 않는다.
+- 종전 ImageViewer/WPF 이관 설계는 폐기했다. 현재 사용자 요청에 따라 Windows/macOS 포팅을 준비하는 공통 presentation·GTK frontend·OS 서비스 경계를 분리한다. 종전 코드 재사용/라이선스 추정은 가져오지 않는다.
 - 사용자 구현 요청에 따라 Cargo workspace와 Linux M1 개발판을 추가했다. 현재 범위는 [구현 상태](doc/08-implementation-status.md)가 기준이며 M0 전체/MVP 완료로 보고하지 않는다.
-- 개발/검증은 Linux x64 우선이다. Windows/macOS/Android 앱은 현재 범위가 아니다. Android는 UX 참고 대상이다.
+- 개발/실행 검증은 Linux x64 우선이다. Windows/macOS 포팅·배포 파이프라인을 준비하되 native 파일/보호 미구현 OS는 readiness gate에서 차단한다. 실제 세 OS 배포 완료로 표시하지 않는다. Android는 UX 참고 대상이다.
 - 이 파일명은 `AGENT.md`다. `AGENTS.md`만 읽는 도구는 명시적으로 이 문서를 읽도록 설정한다.
 
 ## 읽을 문서

@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
+mod path;
+pub use path::RawPath;
 
 pub const VERSION: u16 = 1;
 pub const MAX_MESSAGE: usize = 256 * 1024;
@@ -22,17 +22,6 @@ pub const PAGE_BATCH_BYTES: u64 = 30 * 1024;
 pub const PAGE_BATCH_ENTRIES: usize = 128;
 pub const WORKER_ADDRESS_SPACE: u64 = 1024 * 1024 * 1024;
 pub const DECODE_OVERHEAD: u64 = 8 * 1024 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RawPath(pub Vec<u8>);
-impl RawPath {
-    pub fn new(path: &Path) -> Self {
-        Self(path.as_os_str().as_bytes().to_vec())
-    }
-    pub fn path(&self) -> PathBuf {
-        std::ffi::OsString::from_vec(self.0.clone()).into()
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PageKey {

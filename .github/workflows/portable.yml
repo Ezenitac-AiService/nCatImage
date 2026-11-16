@@ -1,0 +1,22 @@
+name: Portable reader logic
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust
+        run: rustup show active-toolchain
+      - name: Test toolkit-independent logic only (not an OS app port)
+        run: cargo test -p ncat-core -p ncat-presentation --locked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Release guard and checksum tests
+        run: python -m unittest discover -s packaging -p test_pipeline.py

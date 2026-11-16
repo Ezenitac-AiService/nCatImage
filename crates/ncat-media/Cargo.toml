@@ -11,7 +11,7 @@ ncat-protocol.workspace = true
 image.workspace = true
 zip.workspace = true
 tempfile.workspace = true
-rustix.workspace = true
+ncat-platform.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

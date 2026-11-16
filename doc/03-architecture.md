@@ -10,25 +10,29 @@ v0.4.3 · 2026-11-16. 목표 계약과 현재 구현 차이는 [08](08-implement
 
 초기에 하지 않을 것: 다중 OS GUI·C#/Swift 셸·범용 C ABI·async runtime·DI container·플러그인 시스템·DB·자체 renderer. GUI가 목표를 크게 초과하면 core/worker 경계를 유지한 채 더 단순한 frontend를 비교하는 별도 결정을 한다.
 
-## 2. 목표 코드 구조 — 6개 crate 수직 경로 생성됨
+## 2. 코드 구조 — 포팅·배포 준비 후 10개 crate
 
 ```text
 Cargo.toml / Cargo.lock / rust-toolchain.toml
 crates/
   ncat-core/       ID·자연 정렬·읽기 페이지/spread·ViewPlan·예산 규칙
+  ncat-presentation/ 툴킷 독립 GUI 명령·읽기 상태·보기/입력 정책
+  ncat-gtk/        GTK 화면·입력 매핑·픽셀 표시·비동기 작업 수명
+  ncat-desktop/    향후 Windows/macOS용 로컬 GTK 진입점 (native port 미완료)
+  ncat-platform/   Unix 파일 리비전/권한/open·Linux worker 보호
   ncat-protocol/   worker 요청/응답·버전·오류·상한 DTO
-  ncat-backend/    세션·scheduler·IPC client·cache·설정/기록·Linux 서비스
+  ncat-backend/    세션·scheduler·IPC client·cache·설정/진단
   ncat-media/      코덱·색관리·압축 adapter, worker에서만 사용
   ncat-worker/     비신뢰 입력 처리 실행 파일
-  ncat-linux/      GTK 화면·native 입력/접근성·픽셀 표시
+  ncat-linux/      Linux 진입점·KIOFuse/GVfs 인증/마운트 어댑터
 tests/corpus/     재배포 가능한 경계 파일·hash·생성기
 ```
 
-6개 crate는 생성되었다. 현재 회귀 입력은 worker 통합 테스트가 temp 디렉터리에 생성하고, 수동 GTK 입력은 `tools/smoke-fixtures.py`로 생성한다. `tests/corpus/`의 정식 corpus는 아직 없다. 아래의 prefetch/협력 취소/유휴 회수 등 전체 계약은 목표이며 [08](08-implementation-status.md)에 실제 차이를 기록한다.
+기존 6개 crate에 presentation·GTK frontend·platform을 추출했다. 재사용 범위와 미구현 OS 기능은 [09](09-portability.md)를 따른다. 현재 회귀 입력은 worker 통합 테스트가 temp 디렉터리에 생성하고, 수동 GTK 입력은 `tools/smoke-fixtures.py`로 생성한다. `tests/corpus/`의 정식 corpus는 아직 없다. 아래의 prefetch/협력 취소/유휴 회수 등 전체 계약은 목표이며 [08](08-implementation-status.md)에 실제 차이를 기록한다.
 
 - core는 UI·codec·OS·Tokio 비의존, `forbid(unsafe_code)`다.
 - Linux GUI는 현재 `Backend / Event / View / FrameBytes`로 조정·표시를 연결한다. `Action / Snapshot / FrameLease` 명칭의 전체 목표 API가 구현된 것은 아니다. media parser를 UI에 링크해 직접 호출하지 않는다.
-- backend에 선택·정렬·읽기 계산·cache·예산·기록을 두고, GUI에는 widget/포커스·대화상자·이벤트 전달·texture 수명만 둔다.
+- 읽기 입력/보기 정책은 presentation, 정렬·예산/spread는 core, scheduler/cache/worker는 backend, widgets·포커스·대화상자·texture와 요청/이벤트 수명 조정은 GTK frontend에 둔다. 완전한 toolkit-independent controller는 아직 아니다.
 - media의 native FFI는 안전 조건·스레드·allocator·해제 함수를 좁게 캡슐화한다. `Send/Sync`를 근거 없이 수동 구현하지 않는다.
 
 ## 3. 실행 모델

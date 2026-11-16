@@ -665,6 +665,7 @@ version = "0.4.3"
 dependencies = [
  "async-channel",
  "ncat-core",
+ "ncat-platform",
  "ncat-protocol",
  "tempfile",
 ]
@@ -674,13 +675,32 @@ name = "ncat-core"
 version = "0.4.3"
 
 [[package]]
-name = "ncat-linux"
+name = "ncat-desktop"
+version = "0.4.3"
+dependencies = [
+ "gtk4",
+ "ncat-backend",
+ "ncat-gtk",
+]
+
+[[package]]
+name = "ncat-gtk"
 version = "0.4.3"
 dependencies = [
  "gtk4",
  "ncat-backend",
  "ncat-core",
+ "ncat-presentation",
  "ncat-protocol",
+]
+
+[[package]]
+name = "ncat-linux"
+version = "0.4.3"
+dependencies = [
+ "gtk4",
+ "ncat-backend",
+ "ncat-gtk",
 ]
 
 [[package]]
@@ -689,10 +709,26 @@ version = "0.4.3"
 dependencies = [
  "image",
  "ncat-core",
+ "ncat-platform",
+ "ncat-protocol",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
+name = "ncat-platform"
+version = "0.4.3"
+dependencies = [
  "ncat-protocol",
  "rustix",
  "tempfile",
- "zip",
+]
+
+[[package]]
+name = "ncat-presentation"
+version = "0.4.3"
+dependencies = [
+ "ncat-core",
 ]
 
 [[package]]
@@ -711,8 +747,8 @@ dependencies = [
  "ncat-backend",
  "ncat-core",
  "ncat-media",
+ "ncat-platform",
  "ncat-protocol",
- "rustix",
  "tempfile",
  "zip",
 ]

@@ -22,6 +22,8 @@ OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안�
 | [06 보안/데이터](06-security-data.md) | 입력 제한·worker 보호·설정/기록·라이선스/패키지 |
 | [07 검증/로드맵](07-validation-roadmap.md) | 측정·합격 기준·Linux 단계·미결정 사항 |
 | [08 구현 상태](08-implementation-status.md) | 실제 코드/실행 결과·기능 ID별 진척·미검증/제한 |
+| [09 포팅 경계](09-portability.md) | 공통 presentation·GTK·OS 서비스 및 Windows/macOS 미구현 목록 |
+| [10 배포 파이프라인](10-distribution.md) | AppImage·Windows ZIP·macOS DMG 작업, readiness gate·서명/릴리스 정책 |
 | [작업 내역](../CHANGELOG.md) | 0.4.0~0.4.3 반영 사항·릴리스 경계 |
 | [검증 도구](../tools/README.md) | 합성 입력·worker·GUI·네트워크 재현 절차 |
 | [개발 지침](../AGENT.md) | 에이전트 필수 원칙 |
@@ -31,7 +33,7 @@ OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안�
 ## 새 설계의 경계
 
 - 이전 개발 문서는 사용자 요청으로 전부 폐기했다. WPF 이관·편집 필터·종합 사진 기능·다중 OS 동시 개발을 전제로 하지 않는다.
-- 현재는 Linux x64만 개발/검증한다. 다른 OS에도 Rust core를 옮길 수 있게 경계만 유지하며 GUI/FFI/패키지를 미리 만들지 않는다.
+- 실행 검증은 Linux x64다. 사용자 요청에 따라 Windows/macOS 포팅을 준비하는 공통 presentation·GTK frontend·OS 경계를 분리했다. 실제 OS 앱·FFI·배포는 아직 없다. [09](09-portability.md)를 따른다.
 - Linux GUI는 gtk-rs/GTK4 우선 PoC다. native 위젯/IME/접근성 활용이 이유이며 가장 가볍다는 검증 결과는 아니다. 더 무거운 GUI 계층은 실측 필요 시만 도입한다.
 - 앱/backend 코드는 Rust, 확장 형식의 native 라이브러리 의존성은 허용한다. 무조건 순수 Rust만 고집해 이미지/압축 호환성을 축소하지 않는다.
 - 0.4.3은 상단 UI/수동 토글·클릭 후 키보드 입력·드롭 진단과 OS 경유 SMB/FTP/SFTP를 포함한다. 네트워크 URI는 GUI의 Linux 어댑터가 비동기로 연결하고 디코딩은 기존 worker 경계를 유지한다. 자체 계정/다운로드 관리자는 만들지 않는다.

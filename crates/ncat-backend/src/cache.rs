@@ -3,44 +3,9 @@ use crate::{Book, Frame, View};
 use ncat_core::{Budget, Permit};
 use ncat_protocol::{ErrorCode, PageKey};
 use std::collections::VecDeque;
-use std::fs;
-use std::os::unix::fs::MetadataExt;
-use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Revision {
-    device: u64,
-    inode: u64,
-    size: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-
-impl Revision {
-    pub fn differences(&self, now: &Self) -> String {
-        format!(
-            "stage=revision_comparison identity_changed={} size_changed={} mtime_changed={} ctime_changed={}",
-            (self.device, self.inode) != (now.device, now.inode),
-            self.size != now.size,
-            self.modified != now.modified,
-            self.changed != now.changed
-        )
-    }
-    pub fn read(path: &Path) -> Result<Self, ErrorCode> {
-        let m = fs::metadata(path).map_err(|_| ErrorCode::Io)?;
-        if !m.is_file() {
-            return Err(ErrorCode::Unsupported);
-        }
-        Ok(Self {
-            device: m.dev(),
-            inode: m.ino(),
-            size: m.len(),
-            modified: (m.mtime(), m.mtime_nsec()),
-            changed: (m.ctime(), m.ctime_nsec()),
-        })
-    }
-}
+pub(crate) use ncat_platform::Revision;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Target {

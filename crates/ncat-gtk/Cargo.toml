@@ -1,0 +1,13 @@
+[package]
+name = "ncat-gtk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ncat-backend.workspace = true
+ncat-core.workspace = true
+ncat-protocol.workspace = true
+ncat-presentation.workspace = true
+gtk.workspace = true

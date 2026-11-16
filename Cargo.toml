@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ncat-core", "crates/ncat-protocol", "crates/ncat-media", "crates/ncat-worker", "crates/ncat-backend", "crates/ncat-linux"]
+members = ["crates/ncat-core", "crates/ncat-protocol", "crates/ncat-platform", "crates/ncat-presentation", "crates/ncat-gtk", "crates/ncat-desktop", "crates/ncat-media", "crates/ncat-worker", "crates/ncat-backend", "crates/ncat-linux"]
 
 [workspace.package]
 version = "0.4.3"
@@ -13,6 +13,9 @@ ncat-core = { path = "crates/ncat-core" }
 ncat-protocol = { path = "crates/ncat-protocol" }
 ncat-media = { path = "crates/ncat-media" }
 ncat-backend = { path = "crates/ncat-backend" }
+ncat-platform = { path = "crates/ncat-platform" }
+ncat-presentation = { path = "crates/ncat-presentation" }
+ncat-gtk = { path = "crates/ncat-gtk" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }

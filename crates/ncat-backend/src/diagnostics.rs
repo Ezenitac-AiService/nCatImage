@@ -1,9 +1,8 @@
 //! Bounded, path-redacted incident snapshots. Only the coordinator does disk I/O.
 use std::{
     collections::VecDeque,
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -144,7 +143,7 @@ impl Diagnostics {
         }
     }
     fn write_snapshot(&mut self) -> io::Result<()> {
-        match fs::DirBuilder::new().mode(0o700).create(&self.directory) {
+        match ncat_platform::create_private_directory(&self.directory) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
@@ -175,11 +174,7 @@ impl Diagnostics {
             std::process::id(),
             self.sequence
         );
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(self.directory.join(name))?;
+        let mut file = ncat_platform::create_private_file(&self.directory.join(name))?;
         writeln!(
             file,
             "ncat-diagnostics-v1 unix_ns={timestamp} pid={} backend_version={} retention_files={MAX_FILES}",

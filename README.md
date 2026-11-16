@@ -105,6 +105,10 @@ RAR/CBR·7Z, 두 장 보기 UI, 이어보기, 썸네일, ICC 색관리, 애니�
 
 ## 소스 빌드
 
+현재 소스는 Windows/macOS 포팅 준비를 위해 **공통 읽기/GUI 정책 → GTK frontend → Linux 서비스**로 분리되어 있습니다. OS별 재사용 범위와 남은 구현은 [포팅 경계](doc/09-portability.md)를 참고하세요. Windows/macOS 앱 지원이 추가된 것은 아닙니다.
+
+OS별 배포 파이프라인은 [배포 문서](doc/10-distribution.md)를 따릅니다. Linux는 AppImage, Windows는 GTK/worker 포함 포터블 ZIP, macOS는 `.app` 포함 DMG를 목표로 합니다. **Windows/macOS 작업은 포팅 미완료 사전 검사에서 차단되며 아직 다운로드 가능한 배포본이 아닙니다.** 수동 빌드는 Actions artifact만 생성하고, 새 태그의 세 OS 검증이 모두 성공한 경우에만 검토용 초안 릴리스를 만듭니다.
+
 저장소의 `rust-toolchain.toml`에 지정된 Rust와 GTK **4.10 이상** 개발 패키지가 필요합니다. Ubuntu 24.04에서는 다음과 같이 빌드합니다:
 
 ```bash

@@ -1202,7 +1202,7 @@ pub fn worker_path() -> io::Result<PathBuf> {
     Ok(std::env::current_exe()?
         .parent()
         .ok_or_else(|| io::Error::other("executable directory"))?
-        .join("ncat-worker"))
+        .join(ncat_platform::worker_filename()))
 }
 
 #[cfg(test)]

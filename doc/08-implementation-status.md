@@ -4,6 +4,20 @@
 
 ## 0. v0.4.3 최신 작업 요약
 
+### 미릴리스: 포팅 준비 리팩터링
+
+- 후속 배포 요청으로 `ncat-desktop` 로컬 진입점을 추가해 현재 workspace는 10개 crate다. AppImage/Windows portable ZIP/macOS arm64 DMG workflow와 스크립트를 추가했다. Windows/macOS는 readiness gate에서 차단된다. 정의 추가와 실행 가능한 세 OS 배포 완료를 구분한다.
+- 배포 준비 로컬 검증: Rust 65개(장기 1개 ignored), Python release gate/체크섬 테스트 5개, fmt·Clippy·workspace release 빌드·actionlint 문법 검사 통과. native Windows/macOS 패키징/실행은 아직 미검증이다.
+- 이전 작업의 “커밋·푸시·빌드 미실행” 상태와 달리 이번에는 사용자 요청에 따라 변경 전체를 커밋·푸시하고 수동 Distribution packages 작업을 실행한다. 새 버전/태그/공개 Release는 만들지 않는다. 실행 결과는 작업 보고 및 Actions 기록을 기준으로 한다.
+
+- 공통 GUI 명령/보기 정책 `ncat-presentation`, GTK frontend `ncat-gtk`, OS 파일/보호 구현 `ncat-platform`을 추출해 workspace를 9개 crate로 나눴다. Linux 진입점은 KIOFuse/GVfs 연결 서비스를 주입한다.
+- 기존 Unix 경로 bytes, device/inode/length/mtime/ctime 비교, private 파일 권한, no-follow 출력, Linux worker 보호를 유지한다. Windows/macOS 앱·패키징은 미구현이며 포팅 범위는 [09](09-portability.md)에 명시한다.
+- 이번 Linux 검증: fmt·Clippy·workspace release 빌드·Rust 테스트 **65개 통과, 수동 장기 시험 1개 ignored**. 아래 56개는 배포된 0.4.3의 과거 결과다.
+- 현재 환경에 Xvfb/xdotool/Openbox와 이전 FTP 테스트 가상환경이 없어 desktop/모의 네트워크/실제 FTP 회귀를 재실행하지 못했다. 과거 통과를 이번 리팩터링의 GUI 통과 결과로 계산하지 않는다.
+- 설치된 Rust target은 Linux만이며 Windows/macOS compile/실행은 미검증이다. 최초 분리 단계에서는 커밋·푸시·패키지 갱신을 하지 않았으며, 후속 배포 요청의 실행 상태는 위 기록과 Actions 결과로 구분한다. 기존 Release는 유지한다.
+
+### 배포된 v0.4.3
+
 - AI 코딩 에이전트를 통한 설계·구현·검증·문서 개발 사실을 README에 명시했다. 전체 이력은 [CHANGELOG](../CHANGELOG.md)에 기록한다. AI 출력·자동 검사를 독립 보안/품질 인증으로 표현하지 않는다.
 - 0.4.0의 Rust/GTK/worker/캐시 수직 경로에 0.4.1의 상단 UI·백틱 토글·전체화면 숨김·클릭 후 입력·↑/↓·Esc 종료를 추가했다. 0.4.2에서 이름·앱 ID·패키징을 nCatImage로 통일했다.
 - 0.4.3은 드롭 형식 수신 보강과 진단, OS 경유 SMB/FTP/SFTP 연결, Ctrl+L/네트워크 버튼, 비동기 연결·이전 요청 취소·60초 대기 제한을 포함한다. HTTP/WebDAV/FTPS·자체 계정/다운로드 관리자는 범위 밖이다.

@@ -2,6 +2,17 @@
 
 이 문서는 실제 반영한 작업을 기록한다. 계획·목표와 검증 범위는 [개발 문서](doc/README.md), 현재 제한은 [구현 상태](doc/08-implementation-status.md)를 따른다. OpenCode 코딩 에이전트를 통한 AI 기반 개발이며, AI 생성·수정 코드와 문서가 포함된다.
 
+## 미릴리스 — Windows/macOS 포팅 준비
+
+- OS별 Distribution packages workflow를 추가했다: Linux AppImage, Windows GTK/worker 동봉 포터블 ZIP, macOS arm64 `.app`/DMG. Windows 단일 EXE는 구현하지 않고 ZIP fallback을 선택했다.
+- native 포팅 readiness·태그/버전 검사·패키지 relocation smoke·체크섬·전 OS 성공 후 초안 릴리스 정책을 추가했다. 현재 Windows/macOS는 미구현 보호/파일 API 때문에 차단된다.
+- `ncat-desktop` 로컬 GTK 진입점과 배포 문서를 추가했다. 기존 CI의 Openbox 시작 경합은 WM 준비를 기다리도록 보완했다.
+
+- `ncat-presentation`에 툴킷 독립 읽기 명령·키 우선순위·페이지 이동·확대/회전·보기 크기·UI 표시 정책을 추출했다.
+- GTK frontend를 `ncat-gtk`로 옮기고 Linux 진입점은 네트워크 연결 서비스를 주입한다. KIOFuse/GVfs 구현은 `ncat-linux`에 남긴다.
+- 중복 파일 리비전과 private 파일·no-follow 출력·Linux worker 보호를 `ncat-platform`으로 분리했다. Unix 경로 인코딩은 protocol의 별도 모듈에 격리했다.
+- 공통 로직 OS별 CI 정의와 경계 테스트, [포팅 문서](doc/09-portability.md)를 추가했다. Windows/macOS 앱 구현/실행 검증 또는 새로운 릴리스는 아니다.
+
 ## 0.4.3 — 2026-11-16
 
 ### 네트워크 폴더
