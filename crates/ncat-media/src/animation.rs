@@ -18,6 +18,7 @@ pub(super) struct AnimationSession {
     cycles: Option<u32>,
     cycle: u32,
     index: u32,
+    total: Option<u32>,
 }
 
 fn limits(workspace: u64) -> image::Limits {
@@ -126,14 +127,23 @@ impl AnimationSession {
         self.frames = frames;
         self.cycle = 0;
         self.index = 0;
-        for _ in 0..index {
-            self.frames
-                .next()
-                .ok_or(Error::Protocol)?
-                .map_err(|_| Error::Corrupt)?;
-            self.index += 1;
+        let start = Instant::now();
+        let mut last = None;
+        for position in 0..=index {
+            match self.frames.next() {
+                Some(frame) => {
+                    last = Some(frame.map_err(|_| Error::Corrupt)?);
+                    self.index = position;
+                }
+                None => {
+                    self.total = Some(position);
+                    break;
+                }
+            }
         }
-        self.next(book, output)
+        // A user-entered frame beyond EOF clamps to the last valid frame;
+        // never report a corrupt source or wrap through another playback cycle.
+        self.present(last.ok_or(Error::Corrupt)?, output, start)
     }
     pub(super) fn start(
         book: &Book,
@@ -160,6 +170,7 @@ impl AnimationSession {
             cycles,
             cycle: 0,
             index: 0,
+            total: None,
         }))
     }
 
@@ -176,6 +187,7 @@ impl AnimationSession {
                 if self.index == 0 {
                     return Err(Error::Corrupt);
                 }
+                self.total = Some(self.index);
                 if self
                     .cycles
                     .is_some_and(|n| self.cycle.saturating_add(1) >= n)
@@ -196,6 +208,15 @@ impl AnimationSession {
             }
         }
         .map_err(|_| Error::Corrupt)?;
+        self.present(frame, output, start)
+    }
+
+    fn present(
+        &mut self,
+        frame: image::Frame,
+        output: &Path,
+        start: Instant,
+    ) -> Result<Option<FrameInfo>, Error> {
         if self.index >= MAX_ANIMATION_FRAMES {
             return Err(Error::Limit);
         }
@@ -208,6 +229,7 @@ impl AnimationSession {
             .clamp(MIN_FRAME_DELAY_MS, MAX_FRAME_DELAY_MS);
         let info = AnimationInfo {
             index: self.index,
+            total: self.total,
             cycle: self.cycle,
             delay_ms,
             workspace_bytes: self.workspace,

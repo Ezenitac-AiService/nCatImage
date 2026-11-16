@@ -56,12 +56,15 @@ struct Ui {
     frame_status: gtk::Label,
     frame_previous: gtk::Button,
     frame_next: gtk::Button,
+    frame_target: gtk::SpinButton,
+    frame_jump: gtk::Button,
     play_pause: gtk::Button,
     speed: gtk::DropDown,
     smoke: bool,
     smoke_animation: bool,
     smoke_controls: bool,
     smoke_animation_frames: Cell<u32>,
+    smoke_sensitivity_changes: Cell<u32>,
     smoke_steps: Cell<Option<u32>>,
     smoke_started: Cell<bool>,
     smoke_ok: Rc<Cell<bool>>,
@@ -105,11 +108,29 @@ impl Ui {
                 assert_eq!(state.index, 0);
                 assert!(!state.paused);
                 assert!(self.frame_status.text().contains("2.00×"));
-                assert!(self.window.title().unwrap().contains("프레임 1/2"));
+                assert!(!self.window.title().unwrap().contains("프레임"));
+                assert_eq!(self.frame_status.parent(), self.frame_previous.parent());
+                assert!(self.header.title_widget().is_none());
+                self.play_pause.emit_clicked();
+                assert!(self.frame_jump.is_sensitive());
+                self.frame_target.set_value(2.0);
+                self.frame_jump.emit_clicked();
+            }
+            6 => {
+                assert!(state.paused);
+                assert_eq!(state.index, 1);
+                self.frame_target.set_value(1.0);
+                self.frame_jump.emit_clicked();
+            }
+            7 => {
+                assert!(state.paused);
+                assert_eq!(state.index, 0);
+                assert!(self.frame_status.text().contains("1/2"));
+                assert_eq!(self.smoke_sensitivity_changes.get(), 0);
                 self.cancel_reload();
                 self.smoke_ok.set(true);
                 println!(
-                    "animation_controls_smoke=ok pause=true previous=true next=true speed=2 restart=true title=true"
+                    "animation_controls_smoke=ok pause=true previous=true next=true speed=2 restart=true toolbar=true jump=true stable_buttons=true"
                 );
                 self.window.close();
             }
@@ -156,23 +177,49 @@ impl Ui {
     fn update_playback(&self) {
         let state = self.playback.get();
         let text = self.playback_text();
-        self.frame_status.set_text(if text.is_empty() {
-            "nCatImage"
+        let label = if text.is_empty() {
+            "애니메이션 없음"
         } else {
             text.trim_start_matches(" · ")
-        });
+        };
+        if self.frame_status.text() != label {
+            self.frame_status.set_text(label);
+        }
         self.frame_previous
-            .set_sensitive(state.active && !state.busy && state.index > 0);
+            .set_sensitive(state.frame_controls_enabled());
         self.frame_next
-            .set_sensitive(state.active && !state.busy && !state.ended);
+            .set_sensitive(state.frame_controls_enabled());
         self.play_pause.set_sensitive(state.active);
-        self.play_pause.set_label(if state.paused {
+        let label = if state.paused {
             "재생 /"
         } else {
             "일시정지 /"
-        });
+        };
+        if self.play_pause.label().as_deref() != Some(label) {
+            self.play_pause.set_label(label);
+        }
         self.speed.set_sensitive(state.active);
-        self.update_navigation();
+        self.frame_target.set_sensitive(state.can_jump());
+        self.frame_jump.set_sensitive(state.can_jump());
+        self.frame_target.set_range(
+            1.0,
+            f64::from(state.total.unwrap_or(ncat_protocol::MAX_ANIMATION_FRAMES)),
+        );
+    }
+
+    fn jump_frame(self: &Rc<Self>) {
+        let state = self.playback.get();
+        if !state.can_jump() {
+            return;
+        }
+        if state.busy {
+            self.status
+                .set_text("프레임을 읽는 중입니다. 표시된 뒤 다시 이동하세요");
+            return;
+        }
+        self.frame_target.update();
+        let index = self.frame_target.value_as_int().max(1) as u32 - 1;
+        self.request_animation(Some(index));
     }
 
     fn request_animation(self: &Rc<Self>, seek: Option<u32>) {
@@ -224,13 +271,16 @@ impl Ui {
 
     fn step_frame(self: &Rc<Self>, forward: bool) {
         let mut state = self.playback.get();
-        if !state.active || state.busy {
+        if !state.active {
             return;
         }
         state.paused = true;
         self.playback.set(state);
         self.stop_animation_timer();
         self.update_playback();
+        if state.busy {
+            return;
+        }
         if forward {
             if !state.ended {
                 self.request_animation(None);
@@ -536,11 +586,10 @@ impl Ui {
                 "분석 중".into()
             };
             self.window.set_title(Some(&format!(
-                "{} / {} · {} — nCatImage{}",
+                "{} / {} · {} — nCatImage",
                 self.selected.get() + 1,
                 count,
-                name,
-                self.playback_text()
+                name
             )));
         }
         self.syncing.set(false);
@@ -732,8 +781,12 @@ impl Ui {
                 if let Some(animation) = &info.animation {
                     let mut state = self.playback.get();
                     state.displayed(animation.index, animation.cycle, animation.delay_ms);
+                    if let Some(total) = animation.total {
+                        state.total = Some(total);
+                    }
                     self.playback.set(state);
                     self.update_playback();
+                    self.frame_target.set_value(f64::from(state.index + 1));
                     self.schedule_animation();
                 } else {
                     self.reset_playback(true);
@@ -929,9 +982,11 @@ fn build(
     let fullscreen = gtk::Button::with_label("전체 화면");
     header.pack_end(&fullscreen);
     window.set_titlebar(Some(&header));
-    let frame_status = gtk::Label::new(Some("nCatImage"));
+    let frame_status = gtk::Label::new(Some("애니메이션 없음"));
     frame_status.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    header.set_title_widget(Some(&frame_status));
+    frame_status.set_width_chars(24);
+    frame_status.set_max_width_chars(24);
+    frame_status.set_xalign(0.0);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let picture = gtk::Picture::builder()
@@ -985,6 +1040,13 @@ fn build(
     let frame_previous = gtk::Button::with_label("이전 프레임 ,");
     let frame_next = gtk::Button::with_label("다음 프레임 .");
     let play_pause = gtk::Button::with_label("일시정지 /");
+    let frame_target =
+        gtk::SpinButton::with_range(1.0, f64::from(ncat_protocol::MAX_ANIMATION_FRAMES), 1.0);
+    frame_target.set_numeric(true);
+    frame_target.set_width_chars(5);
+    frame_target.set_tooltip_text(Some("일시정지 상태에서 이동할 프레임 번호 (1부터 시작)"));
+    let frame_jump = gtk::Button::with_label("이동");
+    frame_jump.set_tooltip_text(Some("지정한 프레임으로 이동 · Enter"));
     frame_previous.set_tooltip_text(Some("일시정지 후 이전 프레임 · ,"));
     frame_next.set_tooltip_text(Some("일시정지 후 다음 프레임 · ."));
     play_pause.set_tooltip_text(Some("재생 / 일시정지 · /"));
@@ -993,11 +1055,14 @@ fn build(
     ]);
     speed.set_selected(3);
     speed.set_tooltip_text(Some("애니메이션 재생 속도 (0.25×~4×)"));
+    animation_controls.append(&frame_status);
     animation_controls.append(&frame_previous);
     animation_controls.append(&frame_next);
     animation_controls.append(&play_pause);
     animation_controls.append(&gtk::Label::new(Some("속도")));
     animation_controls.append(&speed);
+    animation_controls.append(&frame_target);
+    animation_controls.append(&frame_jump);
     toolbar.append(&animation_controls);
     root.append(&toolbar);
     root.append(&scroll);
@@ -1034,19 +1099,55 @@ fn build(
         frame_status,
         frame_previous,
         frame_next,
+        frame_target,
+        frame_jump,
         play_pause,
         speed,
         smoke,
         smoke_animation: matches!(mode, SmokeMode::Animation | SmokeMode::AnimationControls),
         smoke_controls: mode == SmokeMode::AnimationControls,
         smoke_animation_frames: Cell::new(0),
+        smoke_sensitivity_changes: Cell::new(0),
         smoke_steps: Cell::new(smoke_navigation.then_some(500)),
         smoke_started: Cell::new(false),
         smoke_ok,
     });
     ui.update_navigation();
     ui.update_playback();
+    if ui.smoke_controls {
+        for button in [&ui.frame_previous, &ui.frame_next] {
+            let weak = Rc::downgrade(&ui);
+            button.connect_sensitive_notify(move |_| {
+                if let Some(ui) = weak.upgrade()
+                    && ui.smoke_animation_frames.get() > 0
+                {
+                    ui.smoke_sensitivity_changes
+                        .set(ui.smoke_sensitivity_changes.get() + 1);
+                }
+            });
+        }
+    }
     {
+        let weak = Rc::downgrade(&ui);
+        ui.frame_jump.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.jump_frame();
+            }
+        });
+        let enter = gtk::EventControllerKey::new();
+        enter.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&ui);
+        enter.connect_key_pressed(move |_, key, _, _| {
+            if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
+                if let Some(ui) = weak.upgrade() {
+                    ui.jump_frame();
+                }
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        ui.frame_target.add_controller(enter);
         let weak = Rc::downgrade(&ui);
         ui.frame_previous.connect_clicked(move |_| {
             if let Some(ui) = weak.upgrade() {

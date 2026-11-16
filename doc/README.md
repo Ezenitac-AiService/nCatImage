@@ -1,6 +1,6 @@
 # nCatImage 개발 문서 지도
 
-갱신: 2026-11-16 · v0.5.0 · 상태: **Linux M0 일부 실험·M1 개발 프리뷰 / MVP 미완료**
+갱신: 2026-11-16 · v0.5.1 · 상태: **Linux M0 일부 실험·M1 개발 프리뷰 / MVP 미완료**
 
 OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안내는 [README](../README.md), 버전별 전체 작업 내역은 [CHANGELOG](../CHANGELOG.md), 재현 가능한 검증 코드는 [tools 안내](../tools/README.md)를 따른다. AI 생성·수정 내용과 자동 검사 통과를 정식 품질·보안 인증으로 취급하지 않는다.
 

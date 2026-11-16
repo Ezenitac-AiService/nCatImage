@@ -1,6 +1,13 @@
 # 08. 실제 구현 상태와 Linux 검증 기록
 
-기준일: 2026-11-16 · v0.5.0 · **M0 일부 실험 + M1 개발 프리뷰, MVP/정식 안정판 아님**
+기준일: 2026-11-16 · v0.5.1 · **M0 일부 실험 + M1 개발 프리뷰, MVP/정식 안정판 아님**
+
+## v0.5.1 프레임 UI 수정
+
+- busy/각 프레임마다 이전·다음 버튼 sensitivity를 토글하던 원인을 제거했다. 창 제목/페이지 컨트롤을 매 프레임 갱신하지 않으며 프레임 정보는 애니메이션 툴바와 같은 행에 있다.
+- 일시정지 중 1-based 번호 입력·이동/Enter를 지원한다. unknown total 상태의 초과 seek는 마지막 유효 프레임으로 clamp하고 확인한 전체 수를 wire v3으로 반환한다. 전 프레임 cache나 무제한 seek 큐는 없다.
+- 로컬 Rust 82개 통과(수동 장기 1개 ignored), fmt·Clippy·workspace release 빌드 통과. 실제 Linux GTK/Cairo 재생 7개와 컨트롤 1개(같은 행 배치·번호 seek·버튼 sensitivity 전환 0회 포함) 통과.
+- 사용자 요청으로 문서·버전·커밋/푸시와 Linux AppImage release 빌드를 진행한다. 공개 v0.5.0은 유지하며 새 GitHub Release 게시와 Actions artifact 생성을 구분한다. 패키지 결과는 해당 CI 기록을 따른다.
 
 ## v0.5.0 배포
 

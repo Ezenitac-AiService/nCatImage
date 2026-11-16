@@ -2,6 +2,14 @@
 
 이 문서는 실제 반영한 작업을 기록한다. 계획·목표와 검증 범위는 [개발 문서](doc/README.md), 현재 제한은 [구현 상태](doc/08-implementation-status.md)를 따른다. OpenCode 코딩 에이전트를 통한 AI 기반 개발이며, AI 생성·수정 코드와 문서가 포함된다.
 
+## 0.5.1 — 2026-11-16
+
+- 디코딩 busy/프레임 경계마다 이전·다음 버튼을 비활성화하던 처리를 제거했다. 자동 재생 중 page navigation/title 갱신도 반복하지 않는다.
+- 프레임/전체 수·상태·배속 표시를 타이틀바에서 애니메이션 툴바의 동일 행으로 옮겼다.
+- 일시정지 중 1-based 프레임 번호·이동 버튼/Enter를 추가했다. 아직 전체 수를 모르는 입력의 범위 초과는 재생 wrap/프로토콜 오류 대신 마지막 유효 프레임으로 clamp한다.
+- wire v3의 bounded total metadata와 프레임 이동/버튼 상태 회귀를 추가했다. GUI/worker는 같은 빌드로 배포한다.
+- Rust 테스트 82개(장기 1개 ignored), 실제 GTK 재생/컨트롤 검사 8개·fmt·Clippy·release 빌드 통과. AppImage는 CI의 패키지 검사를 통과한 artifact로 제공하며 Windows/macOS 차단은 유지한다.
+
 ## 0.5.0 — 2026-11-16
 
 Linux x86_64 AppImage 우선 배포. Windows/macOS는 native 파일/worker 보호 미구현으로 차단되며 ZIP/DMG 배포본이 없다. 기존 v0.4.3 Release/태그는 유지한다.

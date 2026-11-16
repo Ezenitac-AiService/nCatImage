@@ -30,6 +30,15 @@ impl Default for Playback {
 }
 
 impl Playback {
+    /// Controls stay visually stable during every automatic decode.
+    pub fn frame_controls_enabled(&self) -> bool {
+        self.active
+    }
+
+    pub fn can_jump(&self) -> bool {
+        self.active && self.paused
+    }
+
     pub fn delay(&self) -> u64 {
         (f64::from(self.delay_ms) / self.speed.clamp(0.25, 4.0))
             .ceil()
@@ -62,6 +71,20 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decode_and_frame_boundaries_do_not_flash_controls() {
+        let mut state = Playback::default();
+        assert!(!state.frame_controls_enabled());
+        state.displayed(0, 0, 10);
+        assert!(state.frame_controls_enabled());
+        state.busy = true;
+        assert!(state.frame_controls_enabled());
+        assert!(!state.can_jump());
+        state.paused = true;
+        assert!(state.can_jump());
+        state.finish();
+        assert!(state.frame_controls_enabled() && state.can_jump());
+    }
     #[test]
     fn speed_changes_delay_without_zero_or_unbounded_timers() {
         let mut state = Playback::default();

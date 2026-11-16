@@ -1,4 +1,4 @@
-# 검증 도구 — v0.5.0
+# 검증 도구 — v0.5.1
 
 2026-11-16 기준. 이 도구들은 AI 코딩 에이전트 개발 중 사용한 검사를 재현 가능하게 정리한 코드다. 작은 합성 입력의 회귀 검사이며 실제 책 전체·GPU·IME·접근성·보안·성능 인증이 아니다. 사용자 ZIP·개인 이미지·실제 서버 계정은 저장소에 포함하지 않는다.
 
@@ -11,7 +11,7 @@ cargo test --workspace --locked
 cargo build --workspace --release --locked
 ```
 
-배포된 0.4.3은 기본 테스트 56개이며, 미릴리스 포팅 분리 후 65개, 애니메이션/프레임 UI 추가 후 80개다. 수동 10,000회 수명 시험 1개는 ignored다. 툴킷·OS 독립 부분만 검사하려면 `cargo test -p ncat-core -p ncat-presentation --locked`를 사용한다. 수동 시험은 명시적으로 실행한다:
+배포된 0.4.3은 기본 테스트 56개, 0.5.0은 80개이며, 0.5.1은 82개다. 수동 10,000회 수명 시험 1개는 ignored다. 툴킷·OS 독립 부분만 검사하려면 `cargo test -p ncat-core -p ncat-presentation --locked`를 사용한다. 수동 시험은 명시적으로 실행한다:
 
 ```bash
 cargo test -p ncat-worker --test pipeline ten_thousand_decodes_return_all_leases --locked -- --ignored
@@ -46,7 +46,7 @@ GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a dbus-run-session -- \
 
 명시적 `--smoke-animation` 모드는 animation 입력의 실제 texture 설정/one-shot timer/다음 frame 요청을 최대 6프레임까지 확인하고 종료한다. finite 파일은 최소 2프레임 후 정상 종료도 허용한다. 소스 SHA256 불변도 확인하며 실측 compositor 제시 시간/FPS·실물 codec corpus 인증은 아니다. 일반 `--smoke-test`는 기존처럼 첫 프레임만 표시하고 종료한다.
 
-도구는 `--smoke-animation-controls`도 실행해 실제 GTK 버튼 signal과 속도 dropdown을 조작한다. 100ms 동안 pause 유지·다음 프레임·이전 seek·2× 속도·finite 종료 후 재시작·타이틀 문자열을 검증한다. OS 키 입력 주입 시험은 아니며 `, . /` 키 정규화와 포커스/modifier 정책은 Rust 단위 시험으로 별도 확인한다.
+도구는 `--smoke-animation-controls`도 실행해 실제 GTK 버튼 signal과 속도 dropdown을 조작한다. pause 유지·다음/이전 seek·2× 속도·finite 종료 후 재시작·번호 이동·frame label/버튼의 같은 행 배치와 버튼 sensitivity 전환 0회를 검증한다. OS 키 입력 주입 시험은 아니며 `, . /` 정규화와 modifier 정책은 Rust 단위 시험으로 확인한다. v0.5.1 Rust 기본 테스트는 82개다.
 
 Ubuntu 24.04 예시 의존성:
 

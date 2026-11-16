@@ -48,6 +48,8 @@ tests/corpus/     재배포 가능한 경계 파일·hash·생성기
 
 ## 4. 요청·큐·버전
 
+v0.5.1 wire v3은 animation의 확인된 `total`(없으면 unknown)을 전달하고 `index < total <= MAX_ANIMATION_FRAMES`를 parent에서 검증한다. 번호 seek는 worker에서 한 프레임씩 합성/폐기하고 범위 초과 시 마지막 유효 프레임을 반환한다. 자동 재생은 애니메이션 툴바의 텍스트만 갱신하며 page spin/창 제목·이전/다음 버튼 sensitivity를 busy마다 갱신하지 않는다. 아래 wire v2 설명은 0.5.0 구현 이력이다.
+
 프레임 UI는 `AnimationSeek`로 이전 프레임을 요청하며 worker가 동일한 예약 안에서 처음부터 해당 프레임까지 합성/폐기한다. pause·배속은 presentation 정책과 GTK one-shot timer에서 처리하고 미리 디코딩 큐는 추가하지 않는다. finite 종료 후에도 이전/재시작을 위해 session을 유지하며 다음 페이지·취소·종료에서 해제한다.
 
 미릴리스 wire v2는 `AnimationNext`/`AnimationEnded`와 프레임 timing metadata를 추가한다. 최초 decode가 애니메이션이면 worker의 iterator/합성 canvas를 유지하고 parent `Permit`도 함께 유지한다. GTK는 표시한 프레임의 delay 뒤 one-shot timer로 다음 프레임 하나만 요청한다. 정상 정지 페이지에는 재생 timer가 없고, 전 프레임 수집/무한 predecode 큐는 없다. 애니메이션은 static LRU에 넣지 않으며 재생 중 인접 prefetch를 만들지 않는다. 새 페이지/보기는 기존 worker session을 회수해 새로 시작한다. GUI와 worker를 같은 wire 버전으로 배포해야 한다.

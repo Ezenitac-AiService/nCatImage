@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 mod path;
 pub use path::RawPath;
 
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 pub const MAX_ANIMATION_FRAMES: u32 = 10_000;
 pub const MIN_FRAME_DELAY_MS: u32 = 10;
 pub const MAX_FRAME_DELAY_MS: u32 = 60_000;
@@ -120,6 +120,7 @@ impl std::fmt::Display for ErrorCode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AnimationInfo {
     pub index: u32,
+    pub total: Option<u32>,
     pub cycle: u32,
     pub delay_ms: u32,
     /// Persistent decoder/compositing reservation, retained by the parent.
@@ -129,6 +130,9 @@ pub struct AnimationInfo {
 impl AnimationInfo {
     pub fn valid(&self) -> bool {
         self.index < MAX_ANIMATION_FRAMES
+            && self
+                .total
+                .is_none_or(|total| total > self.index && total <= MAX_ANIMATION_FRAMES)
             && (MIN_FRAME_DELAY_MS..=MAX_FRAME_DELAY_MS).contains(&self.delay_ms)
             && (DECODE_OVERHEAD..=WORKER_ADDRESS_SPACE).contains(&self.workspace_bytes)
     }
@@ -224,11 +228,33 @@ mod tests {
     fn animation_timing_and_workspace_are_bounded() {
         let info = AnimationInfo {
             index: 0,
+            total: None,
             cycle: 0,
             delay_ms: 10,
             workspace_bytes: DECODE_OVERHEAD,
         };
         assert!(info.valid());
+        assert!(
+            AnimationInfo {
+                total: Some(1),
+                ..info.clone()
+            }
+            .valid()
+        );
+        assert!(
+            !AnimationInfo {
+                total: Some(0),
+                ..info.clone()
+            }
+            .valid()
+        );
+        assert!(
+            !AnimationInfo {
+                total: Some(MAX_ANIMATION_FRAMES + 1),
+                ..info.clone()
+            }
+            .valid()
+        );
         assert!(
             !AnimationInfo {
                 delay_ms: 0,

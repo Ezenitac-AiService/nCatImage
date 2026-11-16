@@ -508,3 +508,37 @@ fn seeking_previous_frame_and_restarting_after_finite_end_are_bounded() {
         assert_eq!(backend.budget_used(), 0);
     }
 }
+
+#[test]
+fn unknown_frame_count_seek_past_end_clamps_without_wrapping_or_error() {
+    let root = tempfile::tempdir().unwrap();
+    for kind in ["gif", "apng", "webp"] {
+        let path = root.path().join(format!("jump.{kind}"));
+        match kind {
+            "gif" => gif(&path, Some(gif::Repeat::Infinite)),
+            "apng" => apng(&path, 0, false),
+            _ => webp(&path, 0),
+        }
+        let backend = backend();
+        let view = View::default();
+        let (book, first) = open(&backend, &path, view);
+        assert_eq!(first.info.animation.as_ref().unwrap().total, None);
+        drop(first);
+        backend
+            .animation_seek(book.clone(), book.selected, view, 9999)
+            .unwrap();
+        match event(&backend) {
+            Event::Frame { frame, .. } => {
+                let animation = frame.info.animation.as_ref().unwrap();
+                assert_eq!((animation.index, animation.total), (1, Some(2)));
+                assert_eq!(&frame.as_ref().as_ref()[..4], &[0, 0, 255, 255]);
+            }
+            other => panic!("jump past EOF must keep a valid image: {other:?}"),
+        }
+        let resumed = next(&backend, &book, view);
+        assert_eq!(resumed.info.animation.as_ref().unwrap().index, 0);
+        close(&backend);
+        drop((resumed, book));
+        assert_eq!(backend.budget_used(), 0);
+    }
+}
