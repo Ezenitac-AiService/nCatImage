@@ -27,9 +27,12 @@ use windows_sys::Win32::{
 };
 
 const RESULT: u32 = WM_APP + 1;
+const VIEWPORT_CHANGED: u32 = WM_APP + 2;
 const ANIMATION: usize = 1;
 const SHUTDOWN: usize = 2;
 const DEADLINE: usize = 3;
+const RESIZE: usize = 4;
+const RESIZE_TEST: usize = 5;
 const OPEN: u16 = 101;
 const FOLDER: u16 = 102;
 const ADDRESS: u16 = 103;
@@ -57,6 +60,7 @@ const STATUS: u16 = 122;
 pub enum Smoke {
     None,
     Window,
+    Resize,
     Frame,
     Animation,
     Navigation,
@@ -107,6 +111,10 @@ struct App {
     smoke_frames: u32,
     navigation_left: u32,
     success: bool,
+    resized_view: Option<View>,
+    resize_test_phase: u8,
+    resize_test_expected: Option<(View, u32)>,
+    paint_count: u32,
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -172,6 +180,10 @@ impl App {
                 smoke_frames: 0,
                 navigation_left: if smoke == Smoke::Navigation { 500 } else { 0 },
                 success: false,
+                resized_view: None,
+                resize_test_phase: 0,
+                resize_test_expected: None,
+                paint_count: 0,
             },
             sender,
         ))
@@ -276,6 +288,101 @@ impl App {
                     "애니메이션 없음".into()
                 },
             );
+        }
+    }
+    unsafe fn queue_resize(&self) {
+        unsafe {
+            InvalidateRect(self.hwnd, ptr::null(), 0);
+            // SetWindowPos/ShowWindow can synchronously reenter procedure while
+            // App is borrowed. Defer state changes until that borrow has ended.
+            PostMessageW(self.hwnd, VIEWPORT_CHANGED, 0, 0);
+        }
+    }
+    unsafe fn viewport_changed(&mut self) {
+        unsafe {
+            self.layout();
+            KillTimer(self.hwnd, RESIZE);
+            if self.closing.is_some() || IsIconic(self.hwnd) != 0 {
+                return;
+            }
+            let rect = self.viewport();
+            if rect.right <= 0 || rect.bottom <= rect.top {
+                return;
+            }
+            let view = self.view();
+            self.resized_view = Some(view);
+            if view != self.animation_view && self.book.as_ref().is_some_and(|book| book.complete) {
+                // Repaint the retained frame immediately, then request a sharper
+                // decode once resizing settles, rather than decoding every pixel.
+                SetTimer(self.hwnd, RESIZE, 100, None);
+            }
+        }
+    }
+    unsafe fn resize_finished(&mut self) {
+        unsafe {
+            KillTimer(self.hwnd, RESIZE);
+            if self.closing.is_none()
+                && IsIconic(self.hwnd) == 0
+                && self.view() != self.animation_view
+            {
+                self.load(self.selected);
+            }
+        }
+    }
+    unsafe fn resize_test(&mut self) {
+        unsafe {
+            if let Some((expected, paints)) = self.resize_test_expected.take()
+                // The window manager may adjust maximize bounds asynchronously.
+                // Validate the settled client area, not the immediate ShowWindow result.
+                && (self.resized_view != Some(self.view()) || self.paint_count <= paints)
+            {
+                eprintln!(
+                    "nCatImage: resize phase={} expected={expected:?} actual={:?} paints={paints}->{}",
+                    self.resize_test_phase, self.resized_view, self.paint_count
+                );
+                self.close();
+                return;
+            }
+            match self.resize_test_phase {
+                0 => {
+                    SetWindowPos(
+                        self.hwnd,
+                        ptr::null_mut(),
+                        0,
+                        0,
+                        720,
+                        540,
+                        SWP_NOMOVE | SWP_NOZORDER,
+                    );
+                }
+                1 => {
+                    ShowWindow(self.hwnd, SW_MAXIMIZE);
+                }
+                2 => {
+                    ShowWindow(self.hwnd, SW_RESTORE);
+                }
+                3 | 4 => self.fullscreen(),
+                5 | 6 => {
+                    self.interface = !self.interface;
+                    self.layout();
+                    self.queue_resize();
+                }
+                7 => {
+                    ShowWindow(self.hwnd, SW_MINIMIZE);
+                }
+                8 => {
+                    ShowWindow(self.hwnd, SW_RESTORE);
+                }
+                _ => {
+                    self.success = true;
+                    self.close();
+                    return;
+                }
+            }
+            self.resize_test_phase += 1;
+            if IsIconic(self.hwnd) == 0 {
+                self.resize_test_expected = Some((self.view(), self.paint_count));
+            }
         }
     }
     unsafe fn navigation_ui(&self) {
@@ -503,6 +610,7 @@ impl App {
             self.controls_input = false;
             SetFocus(self.hwnd);
             self.layout();
+            self.queue_resize();
         }
     }
     unsafe fn consume(&mut self, prepared: Prepared) {
@@ -515,6 +623,9 @@ impl App {
                     self.selected = book.selected;
                     self.book = Some(book);
                     self.navigation_ui();
+                    // A resize may have arrived while the initial catalog was
+                    // incomplete and could not yet submit a replacement load.
+                    self.viewport_changed();
                 }
                 Event::Frame { frame, .. } => {
                     let Some(pixels) = prepared.pixels else {
@@ -602,6 +713,8 @@ impl App {
                 return;
             }
             self.closing = Some(Instant::now());
+            KillTimer(self.hwnd, RESIZE);
+            KillTimer(self.hwnd, RESIZE_TEST);
             self.stop.store(true, Ordering::Release);
             KillTimer(self.hwnd, ANIMATION);
             self.backend.shutdown();
@@ -730,6 +843,7 @@ impl App {
                     }
                     self.interface = true;
                     self.layout();
+                    self.queue_resize();
                     self.controls_input = true;
                     SetFocus(self.control(ADDRESS));
                 }
@@ -739,6 +853,7 @@ impl App {
                     if self.fullscreen.is_none() {
                         self.interface = !self.interface;
                         self.layout();
+                        self.queue_resize();
                         SetFocus(self.hwnd);
                         self.controls_input = false;
                     }
@@ -782,6 +897,10 @@ impl App {
             let mut paint: PAINTSTRUCT = std::mem::zeroed();
             let dc = BeginPaint(self.hwnd, &mut paint);
             if !dc.is_null() {
+                self.paint_count = self.paint_count.saturating_add(1);
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(self.hwnd, &mut client);
+                FillRect(dc, &client, GetSysColorBrush(COLOR_BTNFACE));
                 let rect = self.viewport();
                 IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
                 let brush = CreateSolidBrush(0x202020);
@@ -909,6 +1028,12 @@ unsafe extern "system" fn procedure(
             PostQuitMessage(0);
             return 0;
         }
+        if message == WM_SIZE || message == WM_EXITSIZEMOVE {
+            // Must also run for synchronous reentry from fullscreen/maximize.
+            InvalidateRect(hwnd, ptr::null(), 0);
+            PostMessageW(hwnd, VIEWPORT_CHANGED, 0, 0);
+            return 0;
+        }
         let data = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App>;
         if data.is_null() {
             return DefWindowProcW(hwnd, message, wparam, lparam);
@@ -924,13 +1049,8 @@ unsafe extern "system" fn procedure(
                 0
             }
             WM_ERASEBKGND => 1,
-            WM_SIZE => {
-                app.layout();
-                0
-            }
-            WM_EXITSIZEMOVE => {
-                let selected = app.selected;
-                app.load(selected);
+            VIEWPORT_CHANGED => {
+                app.viewport_changed();
                 0
             }
             WM_COMMAND => {
@@ -944,7 +1064,11 @@ unsafe extern "system" fn procedure(
                 0
             }
             WM_TIMER => {
-                if wparam == ANIMATION {
+                if wparam == RESIZE {
+                    app.resize_finished();
+                } else if wparam == RESIZE_TEST {
+                    app.resize_test();
+                } else if wparam == ANIMATION {
                     KillTimer(hwnd, ANIMATION);
                     app.animation(None);
                 } else if wparam == DEADLINE {
@@ -1067,6 +1191,7 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
         let com = CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32);
         let instance = GetModuleHandleW(ptr::null());
         let class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(procedure),
             hInstance: instance,
             lpszClassName: class_name.as_ptr(),
@@ -1219,6 +1344,9 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                 })?;
             ShowWindow(hwnd, SW_SHOW);
             UpdateWindow(hwnd);
+            if smoke == Smoke::Resize {
+                SetTimer(hwnd, RESIZE_TEST, 250, None);
+            }
             if smoke != Smoke::None {
                 SetTimer(
                     hwnd,

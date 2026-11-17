@@ -4,9 +4,14 @@
 
 폴더와 ZIP/CBZ를 바로 열어 이미지를 감상하는 Linux용 뷰어입니다. 로컬 파일과 OS가 연결하는 SMB·FTP·SFTP 네트워크 폴더를 읽을 수 있습니다. 원본 파일을 변경하지 않으며, 자동 원격 분석이나 감상 기록 저장 없이 동작합니다.
 
-> **v0.5.2 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. Windows EXE는 **실제 Windows 정상 동작/실사용 검증이 완료되지 않은 UNTESTED 실험판**입니다. 최초 Windows CI는 DACL 권한 오류로 실패했으며 이미지 열기가 실패할 수 있습니다. Windows/macOS 포팅은 미완료입니다.
+> **v0.5.3 · 개발 프리뷰** — 아직 MVP/정식 안정판이 아닙니다. Windows EXE는 **실제 Windows 정상 동작/실사용 검증이 완료되지 않은 UNTESTED 실험판**입니다. 최초 Windows CI는 DACL 권한 오류로 실패했으며 이미지 열기가 실패할 수 있습니다. Windows/macOS 포팅은 미완료입니다.
 
 **이 프로젝트는 OpenCode 코딩 에이전트(Coding Agent)를 통한 AI 기반 개발 프로젝트입니다.** 설계·구현·테스트·문서에 AI가 생성하거나 수정한 내용이 포함되어 있습니다. 자동 검사 통과가 안전성·정확성·성능을 보장하는 것은 아니며, 실제 검증 범위와 남은 제한을 공개합니다.
+
+### v0.5.3 변경 사항
+
+- Windows 창 크기 변경·최대화/복원·전체 화면·UI 숨김/표시에서 재그리기와 새 크기 렌더 요청을 놓치는 경로를 수정했습니다.
+- 빈 창 resize/paint 회귀를 추가했습니다. Windows DACL 오류나 실사용 미검증 상태를 해결한 것은 아닙니다.
 
 ### v0.5.2 변경 사항
 
@@ -39,16 +44,16 @@
 
 ## 다운로드 및 실행
 
-[**Linux AppImage / Windows UNTESTED 실험판 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.5.2)
+[**Linux AppImage / Windows UNTESTED 실험판 다운로드**](https://github.com/NyarCat/nCatImage/releases/tag/v0.5.3)
 
-공개 프리릴리스는 v0.5.2입니다. 실행 중인 앱은 파일을 교체한 뒤 종료·재실행해야 합니다. Windows는 `nCatImage-0.5.2-UNTESTED-windows-x86_64.exe`이며 경고문/고지 ZIP도 함께 제공합니다. **실제 Windows 미시험·미서명·기능 동등성 미완료**이며 정상 작동을 보장하지 않습니다.
+공개 프리릴리스는 v0.5.3입니다. 실행 중인 앱은 파일을 교체한 뒤 종료·재실행해야 합니다. Windows는 `nCatImage-0.5.3-UNTESTED-windows-x86_64.exe`이며 경고문/고지 ZIP도 함께 제공합니다. **Windows 정상 동작 미검증·미서명·기능 동등성 미완료**이며 정상 작동을 보장하지 않습니다.
 
 GTK와 이미지 처리 worker를 포함한 **AppImage 파일 하나**로 배포합니다. Rust나 GTK 개발 패키지를 따로 설치할 필요가 없습니다.
 
 ```bash
-chmod +x nCatImage-0.5.2-x86_64.AppImage
-./nCatImage-0.5.2-x86_64.AppImage
-./nCatImage-0.5.2-x86_64.AppImage /path/to/book.cbz
+chmod +x nCatImage-0.5.3-x86_64.AppImage
+./nCatImage-0.5.3-x86_64.AppImage
+./nCatImage-0.5.3-x86_64.AppImage /path/to/book.cbz
 ```
 
 - 대상: **Linux x86_64, glibc 2.39 이상**(Ubuntu 24.04 및 동급 이상 환경).

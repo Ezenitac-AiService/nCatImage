@@ -46,6 +46,7 @@ fn main() -> std::process::ExitCode {
     let (initial, smoke) = match arguments.as_slice() {
         [] => (None, Smoke::None),
         [option] if option == "--smoke-window" => (None, Smoke::Window),
+        [option] if option == "--smoke-resize" => (None, Smoke::Resize),
         [option, path] if option == "--smoke-frame" => (Some(path.into()), Smoke::Frame),
         [option, path] if option == "--smoke-animation" => (Some(path.into()), Smoke::Animation),
         [option, path] if option == "--smoke-navigation" => (Some(path.into()), Smoke::Navigation),

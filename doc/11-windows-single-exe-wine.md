@@ -1,5 +1,13 @@
 # 11. 단일 Windows EXE·Wine 개발 계획
 
+## v0.5.3 수정: Windows resize/paint
+
+`WM_SIZE`의 layout/invalidating만으로는 새 디코딩 크기를 반영하지 못했고, `WM_EXITSIZEMOVE`의 reload는 최대화/복원·전체 화면을 처리하지 못했다. 특히 `SetWindowPos`가 `App` mutable borrow 중 동기 재진입하면 기존 callback이 default 처리로 빠져 갱신을 놓쳤다.
+
+수정: 크기 메시지는 borrow와 무관하게 invalidation과 전용 deferred 메시지를 발생시킨다. UI 전체 배경과 보관 중 프레임을 다시 그리며, 새 viewport가 기존 요청과 다르면 100ms debounce 후 backend load를 요청한다. 최소화·종료/동일 view는 재요청하지 않으며, 초기 catalog 완료 뒤에도 viewport를 다시 확인한다. fullscreen/UI 전환은 명시적으로 같은 경로를 깨운다. 상시 resize polling은 없다.
+
+`--smoke-resize`는 빈 실제 창으로 resize/maximize/restore/fullscreen/UI toggle/minimize/restore를 순서대로 호출하고, deferred viewport가 최종 client rect와 일치하는지 및 paint 횟수가 증가하는지 검사한다. Wine에서 통과했으며 **이미지 픽셀/worker/native Windows 실사용 검증과는 별도**다. 사용자 승인으로 v0.5.3 릴리스 빌드에 포함하며, 기존 v0.5.2는 변경하지 않는다. native DACL 오류는 이번 수정 범위가 아니며 UNTESTED/readiness false를 유지한다.
+
 2026-11-17 · 개발 시작. Linux GTK/AppImage는 유지한다. 이 문서와 시험용 Windows EXE 추가를 Windows 제품 완성/공식 지원으로 표현하지 않는다.
 
 **v0.5.2 공개 승인:** 사용자 요청으로 Windows 단일 EXE를 Linux와 같은 프리릴리스에 **UNTESTED 실험판**으로 포함한다. 실제 Windows 환경에서는 아직 테스트하지 않았다. 보호 우회·readiness 승격 없이 별도 opt-in release build를 사용하며 [배포 문서](10-distribution.md)를 따른다. 아래 “공개하지 않음/커밋하지 않음”은 승인 전 단계의 기록이다.

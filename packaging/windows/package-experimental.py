@@ -26,8 +26,9 @@ def main():
     shutil.copy2(ROOT / "target/windows-single/nCatImage.exe",
                  output / f"{name}-UNTESTED-windows-x86_64.exe")
     warning = (
-        "WARNING: UNTESTED ON NATIVE WINDOWS / 실제 Windows 환경에서 테스트하지 않았습니다.\n"
+        "WARNING: UNTESTED / Windows 정상 동작 및 실사용 검증이 완료되지 않았습니다.\n"
         "Experimental, unsigned development build. Image display/security/input are not verified.\n"
+        "Initial native CI failed: private owner/DACL required. This resize fix does not fix that error.\n"
         "Wine Job Object readback fails; protected decoding is refused. No protection bypass.\n"
         "FTP/SFTP, DPI/accessibility and Linux feature parity remain incomplete.\n"
         "Only Windows system DLLs are imported; no GTK DLL or worker EXE extraction.\n"
@@ -42,6 +43,8 @@ def main():
     (notices / "WINDOWS-UNTESTED.txt").write_text(warning, encoding="utf-8")
     report = json.loads((ROOT / "target/windows-single-build.json").read_text())
     report["native_windows_tested"] = False
+    report["native_windows_validation_passed"] = False
+    report["known_native_failure"] = "private owner/DACL required (initial native CI)"
     report["release_ready"] = False
     (notices / "BUILD-INFO.json").write_text(json.dumps(report, indent=2) + "\n")
     # Cargo registry license files may carry reproducible pre-1980 timestamps.

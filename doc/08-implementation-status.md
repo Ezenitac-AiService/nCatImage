@@ -1,5 +1,9 @@
 # 08. 실제 구현 상태와 Linux 검증 기록
 
+## v0.5.3 — Windows resize/paint 수정 공개
+
+사용자 요청으로 0.5.2에서 0.5.3으로 patch 버전을 올려 커밋·푸시·프리릴리스 공개를 진행한다. 크기 변경·최대화/복원·전체 화면·UI 전환에서 deferred viewport 갱신/재그리기와 100ms debounce 렌더 요청을 연결했다. Wine 빈 창 resize/paint 회귀를 추가했다. Linux AppImage와 Windows UNTESTED EXE를 같은 preview 빌드로 만들며, native DACL 오류·보안/실사용 미검증 상태와 readiness false는 유지한다. 기존 Release는 덮어쓰지 않는다.
+
 기준일: 2026-11-16 · v0.5.1 · **M0 일부 실험 + M1 개발 프리뷰, MVP/정식 안정판 아님**
 
 ## v0.5.2 공개 준비 — Windows UNTESTED 포함
