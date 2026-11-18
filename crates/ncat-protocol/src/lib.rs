@@ -5,7 +5,25 @@ use std::io::{self, Read, Write};
 mod path;
 pub use path::RawPath;
 
-pub const VERSION: u16 = 4;
+pub const VERSION: u16 = 5;
+pub const MAX_METADATA_BYTES: usize = 32 * 1024;
+pub const MAX_METADATA_FIELDS: usize = 32;
+pub const MAX_METADATA_VALUE: usize = 4096;
+// Includes formatted UI strings, UTF-16 native controls and transient copies.
+pub const METADATA_PRESENTATION_COPIES: u64 = 8;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataEntry {
+    pub name: String,
+    pub value: String,
+}
+
+pub fn metadata_text_safe(text: &str) -> bool {
+    text.chars().all(|c| {
+        (!c.is_control() || matches!(c, '\n' | '\t'))
+            && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    })
+}
 pub const MAX_ANIMATION_FRAMES: u32 = 10_000;
 pub const MIN_FRAME_DELAY_MS: u32 = 10;
 pub const MAX_FRAME_DELAY_MS: u32 = 60_000;
@@ -149,8 +167,16 @@ pub struct FrameInfo {
     pub format: String,
     pub elapsed_us: u64,
     pub animation: Option<AnimationInfo>,
+    pub metadata: Vec<MetadataEntry>,
 }
 impl FrameInfo {
+    pub fn metadata_bytes(&self) -> u64 {
+        self.metadata
+            .iter()
+            .map(|entry| (entry.name.len() + entry.value.len() + 64) as u64)
+            .sum()
+    }
+
     pub fn valid(&self) -> bool {
         self.width > 0
             && self.height > 0
@@ -164,6 +190,16 @@ impl FrameInfo {
             && self.bytes <= MAX_OUTPUT
             && self.format.len() <= 32
             && self.animation.as_ref().is_none_or(AnimationInfo::valid)
+            && self.metadata.len() <= MAX_METADATA_FIELDS
+            && self.metadata_bytes() <= MAX_METADATA_BYTES as u64
+            && self.metadata.iter().all(|entry| {
+                !entry.name.is_empty()
+                    && entry.name.len() <= 128
+                    && !entry.value.is_empty()
+                    && entry.value.len() <= MAX_METADATA_VALUE
+                    && metadata_text_safe(&entry.name)
+                    && metadata_text_safe(&entry.value)
+            })
     }
 }
 
@@ -324,8 +360,19 @@ mod tests {
             format: "Png".into(),
             elapsed_us: 0,
             animation: None,
+            metadata: Vec::new(),
         };
         assert!(frame.valid());
+        let mut metadata_frame = frame.clone();
+        metadata_frame.metadata.push(MetadataEntry {
+            name: "Title".into(),
+            value: "hello".into(),
+        });
+        assert!(metadata_frame.valid());
+        metadata_frame.metadata[0].value = "\u{202e}spoof".into();
+        assert!(!metadata_frame.valid());
+        metadata_frame.metadata[0].value = "x".repeat(MAX_METADATA_VALUE + 1);
+        assert!(!metadata_frame.valid());
         assert!(
             !FrameInfo {
                 width: 8193,

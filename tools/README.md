@@ -1,8 +1,17 @@
-# 검증 도구 — v0.5.1
+# 검증 도구 — v0.5.4
 
 2026-11-16 기준. 이 도구들은 AI 코딩 에이전트 개발 중 사용한 검사를 재현 가능하게 정리한 코드다. 작은 합성 입력의 회귀 검사이며 실제 책 전체·GPU·IME·접근성·보안·성능 인증이 아니다. 사용자 ZIP·개인 이미지·실제 서버 계정은 저장소에 포함하지 않는다.
 
 ## Rust 회귀 및 예제
+
+v0.5.4 Tab/metadata 검사는 다음과 같다:
+
+```bash
+cargo build --workspace --release --locked
+GSK_RENDERER=cairo python3 tools/metadata-smoke.py --image target/release/ncat-linux
+```
+
+도구는 다운로드 없는 PNG(메타데이터 없음/PNG tEXt·iTXt 있음)와 CBZ를 생성한다. 실제 GTK에서 기본 off·Tab/Shift+Tab key-signal 토글·포커스 유지·markup 비사용·내용 없음/clear 시 숨김·원본 hash 불변을 검사한다. OS 키 입력 주입/실물 EXIF corpus/접근성 인증과 구분한다. Windows `--smoke-metadata-window`는 신뢰 합성 텍스트를 넣은 UI 전용 검사이며, 실제 protected decode를 우회하지 않는다.
 
 Windows 단일 EXE/Wine 검사는 [11](../doc/11-windows-single-exe-wine.md)을 따른다. `packaging/windows/build-single.py`는 GTK 비의존 개발 뷰어와 PE import report를 만든다. `tools/windows-wine-smoke.py --image target/windows-single/nCatImage.exe`는 새 private prefix에서 `--self-test-platform`·빈 창·보호 없는 worker 거부를 검사한다. Wine Job readback 제약 때문에 protected decode 성공 검사와 구분한다.
 

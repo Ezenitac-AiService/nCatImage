@@ -90,6 +90,9 @@ fn apng(path: &Path, plays: u32, separate_default: bool) {
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_animated(2, plays).unwrap();
     encoder.set_sep_def_img(separate_default).unwrap();
+    encoder
+        .add_text_chunk("Title".into(), "APNG metadata fixture".into())
+        .unwrap();
     let mut writer = encoder.write_header().unwrap();
     if separate_default {
         writer
@@ -101,6 +104,34 @@ fn apng(path: &Path, plays: u32, separate_default: bool) {
         writer.write_image_data(&color.repeat(2)).unwrap();
     }
     writer.finish().unwrap();
+}
+
+#[test]
+fn embedded_metadata_survives_worker_frames_seek_and_clears_on_plain_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("animation.png");
+    apng(&path, 0, false);
+    let original = fs::read(&path).unwrap();
+    let backend = backend();
+    let view = View::default();
+    let (book, first) = open(&backend, &path, view);
+    assert_eq!(first.info.metadata[0].value, "APNG metadata fixture");
+    let second = next(&backend, &book, view);
+    assert_eq!(second.info.metadata, first.info.metadata);
+    backend
+        .animation_seek(book.clone(), book.selected, view, 0)
+        .unwrap();
+    let Event::Frame { frame: sought, .. } = event(&backend) else {
+        panic!("expected seek frame")
+    };
+    assert_eq!(sought.info.metadata, first.info.metadata);
+    let plain = dir.path().join("plain.png");
+    image::RgbImage::new(4, 4).save(&plain).unwrap();
+    let (_, plain) = open(&backend, &plain, view);
+    assert!(plain.info.metadata.is_empty());
+    assert_eq!(fs::read(path).unwrap(), original);
+    drop((first, second, sought, plain));
+    close(&backend);
 }
 
 fn chunk(target: &mut Vec<u8>, kind: &[u8; 4], bytes: &[u8]) {

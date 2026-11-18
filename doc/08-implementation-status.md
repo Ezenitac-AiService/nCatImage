@@ -1,5 +1,12 @@
 # 08. 실제 구현 상태와 Linux 검증 기록
 
+## v0.5.4 · 2026-11-19 — Tab 메타데이터 레이어
+
+- main GTK/Win32의 Tab/Shift+Tab은 컨트롤 순회를 제거하고 embedded metadata floating layer를 토글한다. 기본 off, metadata 없으면 숨김, 이미지 영역 왼쪽 위 고정이며 fullscreen/UI 숨김과 독립적이다. 원본·별도 metadata 저장·진단 로그에 내용을 쓰지 않는다.
+- worker-only bounded 추출과 wire v5 DTO/부모 검증, metadata 표시 복사/캐시 bytes 예약을 추가했다. PNG 텍스트·EXIF·XMP·JPEG/GIF 코멘트를 지원하며 binary ICC/모든 vendor metadata 지원을 의미하지 않는다. 최대 32항목/32KiB, 값당 4096bytes이며 긴 값은 잘라 `…`로 표시한다.
+- Linux Rust 97개(장기 1개 ignored), 실제 GTK overlay/key-signal 3개 및 기존 animation/control 8개 통과. Windows-target Clippy/PE system-import build와 Wine 플랫폼/빈 창/resize/합성 metadata layer/worker 거부 5개 통과. native Windows 파일 보호·실사용 검증은 별도 미완료다.
+- 사용자 요청으로 문서를 정리하고 0.5.4로 버전업·커밋/푸시·Linux/Windows preview build·프리릴리스 공개를 진행한다. GUI/worker wire v5는 기존 v0.5.3의 wire v4와 섞으면 안 된다. 실제 패키지 결과는 Actions/Release 기록을 따른다.
+
 ## v0.5.3 — Windows resize/paint 수정 공개
 
 사용자 요청으로 0.5.2에서 0.5.3으로 patch 버전을 올려 커밋·푸시·프리릴리스 공개를 진행한다. 크기 변경·최대화/복원·전체 화면·UI 전환에서 deferred viewport 갱신/재그리기와 100ms debounce 렌더 요청을 연결했다. Wine 빈 창 resize/paint 회귀를 추가했다. Linux AppImage와 Windows UNTESTED EXE를 같은 preview 빌드로 만들며, native DACL 오류·보안/실사용 미검증 상태와 readiness false는 유지한다. 기존 Release는 덮어쓰지 않는다.

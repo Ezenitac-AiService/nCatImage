@@ -1,6 +1,6 @@
 # nCatImage 개발 문서 지도
 
-갱신: 2026-11-16 · v0.5.1 · 상태: **Linux M0 일부 실험·M1 개발 프리뷰 / MVP 미완료**
+갱신: 2026-11-19 · v0.5.4 · 상태: **Linux M0 일부 실험·M1 개발 프리뷰 / Windows UNTESTED / MVP 미완료**
 
 OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안내는 [README](../README.md), 버전별 전체 작업 내역은 [CHANGELOG](../CHANGELOG.md), 재현 가능한 검증 코드는 [tools 안내](../tools/README.md)를 따른다. AI 생성·수정 내용과 자동 검사 통과를 정식 품질·보안 인증으로 취급하지 않는다.
 
@@ -25,6 +25,7 @@ OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안�
 | [09 포팅 경계](09-portability.md) | 공통 presentation·GTK·OS 서비스 및 Windows/macOS 미구현 목록 |
 | [10 배포 파이프라인](10-distribution.md) | AppImage·Windows 단일 EXE 전환·macOS DMG, readiness gate·서명/릴리스 정책 |
 | [11 Windows 단일 EXE·Wine](11-windows-single-exe-wine.md) | native GUI·동일 EXE worker·Windows 안전성·Wine 단계별 개발 계획 |
+| [12 메타데이터 레이어](12-metadata-overlay.md) | Tab 토글·floating layer·추출 형식/상한·wire v5·검증 |
 | [작업 내역](../CHANGELOG.md) | 0.4.0~0.4.3 반영 사항·릴리스 경계 |
 | [검증 도구](../tools/README.md) | 합성 입력·worker·GUI·네트워크 재현 절차 |
 | [개발 지침](../AGENT.md) | 에이전트 필수 원칙 |
@@ -34,7 +35,7 @@ OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안�
 ## 새 설계의 경계
 
 - 이전 개발 문서는 사용자 요청으로 전부 폐기했다. WPF 이관·편집 필터·종합 사진 기능·다중 OS 동시 개발을 전제로 하지 않는다.
-- 실행 검증은 Linux x64다. 사용자 요청에 따라 Windows/macOS 포팅을 준비하는 공통 presentation·GTK frontend·OS 경계를 분리했다. 실제 OS 앱·FFI·배포는 아직 없다. [09](09-portability.md)를 따른다.
+- 실행 검증은 Linux x64 우선이다. 공통 presentation·GTK frontend·OS 경계와 Windows Win32 셸을 분리했다. Windows는 단일 EXE UNTESTED 실험판만 공개하며 native 보호/실사용 검증과 macOS 포팅은 미완료다. [09](09-portability.md), [11](11-windows-single-exe-wine.md)을 따른다.
 - Linux GUI는 gtk-rs/GTK4 우선 PoC다. native 위젯/IME/접근성 활용이 이유이며 가장 가볍다는 검증 결과는 아니다. 더 무거운 GUI 계층은 실측 필요 시만 도입한다.
 - 앱/backend 코드는 Rust, 확장 형식의 native 라이브러리 의존성은 허용한다. 무조건 순수 Rust만 고집해 이미지/압축 호환성을 축소하지 않는다.
 - 0.4.3은 상단 UI/수동 토글·클릭 후 키보드 입력·드롭 진단과 OS 경유 SMB/FTP/SFTP를 포함한다. 네트워크 URI는 GUI의 Linux 어댑터가 비동기로 연결하고 디코딩은 기존 worker 경계를 유지한다. 자체 계정/다운로드 관리자는 만들지 않는다.

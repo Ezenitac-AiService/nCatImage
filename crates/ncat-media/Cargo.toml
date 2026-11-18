@@ -12,6 +12,8 @@ image.workspace = true
 zip.workspace = true
 tempfile.workspace = true
 ncat-platform.workspace = true
+kamadak-exif = "0.6.1"
+flate2 = "1.1"
 
 [dev-dependencies]
 tempfile.workspace = true

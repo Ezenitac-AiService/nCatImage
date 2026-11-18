@@ -31,7 +31,7 @@ def main():
     results = []
     print(f"Isolated Wine prefix and results: {work}", flush=True)
     for option, expected in [("--self-test-platform", 0), ("--smoke-window", 0),
-                             ("--smoke-resize", 0), ("--worker", 2)]:
+                             ("--smoke-resize", 0), ("--smoke-metadata-window", 0), ("--worker", 2)]:
         # Wine creates its own OS files in the private prefix, never in deployment.
         with (work / (option.removeprefix("--") + ".log")).open("wb") as log:
             result = subprocess.run([wine, str(image), option], cwd=deployed, env=environment,

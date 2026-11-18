@@ -25,6 +25,9 @@ fn single_drop_file(files: &[gio::File]) -> Result<&gio::File, DropRejection> {
 }
 
 struct Ui {
+    metadata: RefCell<ncat_presentation::metadata::MetadataOverlay>,
+    metadata_label: gtk::Label,
+    metadata_panel: gtk::ScrolledWindow,
     window: gtk::ApplicationWindow,
     header: gtk::HeaderBar,
     toolbar: gtk::Box,
@@ -61,6 +64,7 @@ struct Ui {
     play_pause: gtk::Button,
     speed: gtk::DropDown,
     smoke: bool,
+    smoke_metadata: bool,
     smoke_animation: bool,
     smoke_controls: bool,
     smoke_animation_frames: Cell<u32>,
@@ -71,6 +75,67 @@ struct Ui {
 }
 
 impl Ui {
+    fn metadata_smoke(&self, has_metadata: bool) {
+        assert!(!self.metadata.borrow().enabled);
+        assert!(!self.metadata_panel.is_visible());
+        self.position.grab_focus();
+        let focus = gtk::prelude::RootExt::focus(&self.window);
+        let picture = self.picture.paintable();
+        let controllers = self.window.observe_controllers();
+        let keys = (0..controllers.n_items())
+            .find_map(|index| {
+                controllers
+                    .item(index)?
+                    .downcast::<gtk::EventControllerKey>()
+                    .ok()
+            })
+            .expect("window key controller");
+        assert!(keys.emit_by_name::<bool>(
+            "key-pressed",
+            &[&gdk::Key::Tab, &0u32, &gdk::ModifierType::empty()]
+        ));
+        assert!(self.metadata.borrow().enabled);
+        assert_eq!(self.metadata_panel.is_visible(), has_metadata);
+        assert!(!self.metadata_label.property::<bool>("use-markup"));
+        assert_eq!(
+            self.metadata_label.text().as_str(),
+            self.metadata.borrow().text
+        );
+        assert_eq!(gtk::prelude::RootExt::focus(&self.window), focus);
+        assert!(keys.emit_by_name::<bool>(
+            "key-pressed",
+            &[
+                &gdk::Key::ISO_Left_Tab,
+                &0u32,
+                &gdk::ModifierType::SHIFT_MASK
+            ]
+        ));
+        assert!(!self.metadata_panel.is_visible());
+        assert!(!self.metadata.borrow().enabled);
+        assert_eq!(self.picture.paintable(), picture);
+        self.toggle_metadata();
+        self.clear_metadata();
+        assert!(!self.metadata_panel.is_visible());
+        assert!(self.metadata.borrow().enabled);
+        self.smoke_ok.set(true);
+        println!(
+            "metadata_overlay_smoke=ok default_off=true tab=true focus_unchanged=true plain_text=true has_metadata={has_metadata}"
+        );
+        self.window.close();
+    }
+    fn sync_metadata(&self) {
+        let state = self.metadata.borrow();
+        self.metadata_label.set_text(&state.text);
+        self.metadata_panel.set_visible(state.visible());
+    }
+    fn toggle_metadata(&self) {
+        self.metadata.borrow_mut().toggle();
+        self.sync_metadata();
+    }
+    fn clear_metadata(&self) {
+        self.metadata.borrow_mut().clear();
+        self.sync_metadata();
+    }
     fn controls_smoke(self: &Rc<Self>, count: u32) {
         let state = self.playback.get();
         match count {
@@ -353,6 +418,7 @@ impl Ui {
                     ui.loading_timer.borrow_mut().take();
                     if !ui.closing.get() && ui.backend.generation() == generation {
                         ui.picture.set_paintable(gdk::Paintable::NONE);
+                        ui.clear_metadata();
                         ui.status.set_text("페이지를 읽는 중…");
                     }
                 }
@@ -475,6 +541,7 @@ impl Ui {
         self.book.borrow_mut().take();
         self.reset_playback(true);
         self.picture.set_paintable(gdk::Paintable::NONE);
+        self.clear_metadata();
         self.selected.set(0);
         self.reader_view.set(ReaderView::default());
         self.layout_picture();
@@ -760,6 +827,9 @@ impl Ui {
                 if !info.valid() {
                     return;
                 }
+                if self.metadata.borrow_mut().update(&info.metadata) {
+                    self.sync_metadata();
+                }
                 let bytes = glib::Bytes::from_owned(FrameBytes(frame));
                 let texture = gdk::MemoryTexture::new(
                     info.width as i32,
@@ -800,6 +870,10 @@ impl Ui {
                     self.backend.budget_used() as f64 / 1_048_576.0
                 ));
                 if self.smoke {
+                    if self.smoke_metadata {
+                        self.metadata_smoke(!info.metadata.is_empty());
+                        return;
+                    }
                     if self.smoke_animation {
                         if info.animation.is_none() {
                             self.window.close();
@@ -855,6 +929,7 @@ impl Ui {
                     timer.remove();
                 }
                 self.picture.set_paintable(gdk::Paintable::NONE);
+                self.clear_metadata();
                 self.status.set_text(&code.to_string());
                 if self.smoke {
                     self.smoke_ok.set(false);
@@ -929,6 +1004,7 @@ impl Ui {
         self.backend.shutdown();
         self.book.borrow_mut().take();
         self.picture.set_paintable(gdk::Paintable::NONE);
+        self.clear_metadata();
     }
 }
 
@@ -940,6 +1016,7 @@ enum SmokeMode {
     Frame,
     Animation,
     AnimationControls,
+    Metadata,
 }
 
 fn build(
@@ -1065,9 +1142,48 @@ fn build(
     animation_controls.append(&frame_jump);
     toolbar.append(&animation_controls);
     root.append(&toolbar);
-    root.append(&scroll);
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&scroll));
+    let metadata_label = gtk::Label::new(None);
+    metadata_label.set_use_markup(false);
+    metadata_label.set_wrap(true);
+    metadata_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    metadata_label.set_xalign(0.0);
+    metadata_label.set_yalign(0.0);
+    metadata_label.set_margin_top(10);
+    metadata_label.set_margin_bottom(10);
+    metadata_label.set_margin_start(12);
+    metadata_label.set_margin_end(12);
+    let metadata_panel = gtk::ScrolledWindow::builder()
+        .child(&metadata_label)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .margin_start(12)
+        .margin_top(12)
+        .width_request(400)
+        .max_content_height(300)
+        .propagate_natural_height(true)
+        .visible(false)
+        .focusable(false)
+        .build();
+    metadata_panel.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    metadata_panel.add_css_class("metadata-overlay");
+    let css = gtk::CssProvider::new();
+    css.load_from_data(
+        ".metadata-overlay { background: rgba(20,20,20,0.86); color: white; border-radius: 8px; }",
+    );
+    gtk::style_context_add_provider_for_display(
+        &gtk::prelude::WidgetExt::display(&window),
+        &css,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    overlay.add_overlay(&metadata_panel);
+    root.append(&overlay);
     window.set_child(Some(&root));
     let ui = Rc::new(Ui {
+        metadata: RefCell::new(ncat_presentation::metadata::MetadataOverlay::default()),
+        metadata_label,
+        metadata_panel,
         window,
         header,
         toolbar,
@@ -1104,6 +1220,7 @@ fn build(
         play_pause,
         speed,
         smoke,
+        smoke_metadata: mode == SmokeMode::Metadata,
         smoke_animation: matches!(mode, SmokeMode::Animation | SmokeMode::AnimationControls),
         smoke_controls: mode == SmokeMode::AnimationControls,
         smoke_animation_frames: Cell::new(0),
@@ -1337,6 +1454,7 @@ fn build(
                 Command::Playback => ui.toggle_playback(),
                 Command::Native => return glib::Propagation::Proceed,
                 Command::Block => {}
+                Command::ToggleMetadata => ui.toggle_metadata(),
                 Command::Open { folder } => ui.dialog(folder),
                 Command::Network => ui.network_dialog(),
                 Command::Quit => ui.window.close(),
@@ -1639,10 +1757,14 @@ pub fn run(resolve_network: network::Resolver) -> glib::ExitCode {
     let smoke_controls = first
         .as_ref()
         .is_some_and(|value| value == "--smoke-animation-controls");
+    let smoke_metadata = first
+        .as_ref()
+        .is_some_and(|value| value == "--smoke-metadata");
     let smoke = smoke_empty
         || smoke_navigation
         || smoke_animation
         || smoke_controls
+        || smoke_metadata
         || first.as_ref().is_some_and(|value| value == "--smoke-test");
     let initial = if smoke_empty {
         None
@@ -1663,7 +1785,9 @@ pub fn run(resolve_network: network::Resolver) -> glib::ExitCode {
             build(
                 app,
                 initial.clone(),
-                if smoke_controls {
+                if smoke_metadata {
+                    SmokeMode::Metadata
+                } else if smoke_controls {
                     SmokeMode::AnimationControls
                 } else if smoke_animation {
                     SmokeMode::Animation

@@ -50,7 +50,9 @@ tests/corpus/     재배포 가능한 경계 파일·hash·생성기
 
 ## 4. 요청·큐·버전
 
-Windows W0 소스의 wire v4는 Unix bytes와 Windows UTF-16LE code units를 같은 host의 부모/worker 간 lossless하게 전달한다. invalid NUL/length/alignment는 Deserialize 단계에서 거부한다. worker 명령은 executable/arguments로 분리하며 같은 EXE 모드는 명시적 `--worker` 인자만 사용한다. 아직 Windows decoder가 연결되었다는 뜻은 아니다.
+현재 v0.5.4 wire v5는 bounded `FrameInfo.metadata`를 추가한다. metadata는 worker가 추출하고 parent가 개수/길이/제어 문자를 검증하며 GUI는 plain text overlay로만 표시한다. animation/seek/cache의 frame 소유권·예산에도 연결한다. [12](12-metadata-overlay.md)를 따른다.
+
+Windows W0에서 추가한 wire v4 경로 표현은 유지한다. Unix bytes와 Windows UTF-16LE code units를 같은 host의 부모/worker 간 lossless하게 전달하고 invalid NUL/length/alignment는 Deserialize 단계에서 거부한다. worker 명령은 executable/arguments로 분리하며 같은 EXE 모드는 명시적 `--worker` 인자만 사용한다. Windows codec 연결은 구현했지만 native DACL/Job·실사용 검증은 별도 미완료다.
 
 v0.5.1 wire v3은 animation의 확인된 `total`(없으면 unknown)을 전달하고 `index < total <= MAX_ANIMATION_FRAMES`를 parent에서 검증한다. 번호 seek는 worker에서 한 프레임씩 합성/폐기하고 범위 초과 시 마지막 유효 프레임을 반환한다. 자동 재생은 애니메이션 툴바의 텍스트만 갱신하며 page spin/창 제목·이전/다음 버튼 sensitivity를 busy마다 갱신하지 않는다. 아래 wire v2 설명은 0.5.0 구현 이력이다.
 

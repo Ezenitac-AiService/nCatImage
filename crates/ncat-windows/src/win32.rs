@@ -33,6 +33,7 @@ const SHUTDOWN: usize = 2;
 const DEADLINE: usize = 3;
 const RESIZE: usize = 4;
 const RESIZE_TEST: usize = 5;
+const METADATA_TEST: usize = 6;
 const OPEN: u16 = 101;
 const FOLDER: u16 = 102;
 const ADDRESS: u16 = 103;
@@ -61,6 +62,7 @@ pub enum Smoke {
     None,
     Window,
     Resize,
+    MetadataWindow,
     Frame,
     Animation,
     Navigation,
@@ -87,6 +89,8 @@ impl Drop for Window {
     }
 }
 struct App {
+    metadata: ncat_presentation::metadata::MetadataOverlay,
+    metadata_hwnd: HWND,
     hwnd: HWND,
     controls: Vec<(u16, HWND, i32, i32, i32)>,
     backend: Backend,
@@ -156,6 +160,8 @@ impl App {
         let (sender, events) = mpsc::sync_channel(2);
         Ok((
             Self {
+                metadata: ncat_presentation::metadata::MetadataOverlay::default(),
+                metadata_hwnd: ptr::null_mut(),
                 hwnd: ptr::null_mut(),
                 controls: Vec::new(),
                 backend,
@@ -250,6 +256,91 @@ impl App {
                 );
             }
             InvalidateRect(self.hwnd, ptr::null(), 0);
+            self.metadata_layout();
+        }
+    }
+    unsafe fn metadata_layout(&self) {
+        unsafe {
+            if self.metadata_hwnd.is_null() {
+                return;
+            }
+            let viewport = self.viewport();
+            let width = (viewport.right - 24).min(480);
+            let columns = ((width - 24) / 8).max(1) as usize;
+            let lines: usize = self
+                .metadata
+                .text
+                .lines()
+                .map(|line| line.chars().count().div_ceil(columns).max(1))
+                .sum();
+            let height = (viewport.bottom - viewport.top - 24)
+                .min(300)
+                .min((lines * 20 + 20) as i32);
+            let show = self.metadata.visible() && width >= 80 && height >= 40;
+            if show {
+                SetWindowPos(
+                    self.metadata_hwnd,
+                    HWND_TOP,
+                    12,
+                    viewport.top + 12,
+                    width,
+                    height,
+                    SWP_NOACTIVATE,
+                );
+            }
+            ShowWindow(self.metadata_hwnd, if show { SW_SHOWNA } else { SW_HIDE });
+        }
+    }
+    unsafe fn sync_metadata(&self) {
+        unsafe {
+            if !self.metadata_hwnd.is_null() {
+                SetWindowTextW(
+                    self.metadata_hwnd,
+                    wide(&self.metadata.text.replace('\n', "\r\n")).as_ptr(),
+                );
+            }
+            self.metadata_layout();
+            InvalidateRect(self.hwnd, ptr::null(), 0);
+        }
+    }
+    unsafe fn metadata_test(&mut self) {
+        unsafe {
+            KillTimer(self.hwnd, METADATA_TEST);
+            let result = (|| {
+                if self.metadata.enabled || IsWindowVisible(self.metadata_hwnd) != 0 {
+                    return false;
+                }
+                // Trusted UI-only fixture, not decoded pixels or a protection bypass.
+                self.metadata.update(&[ncat_protocol::MetadataEntry {
+                    name: "Title".into(),
+                    value: "<literal> 한글 synthetic metadata".into(),
+                }]);
+                self.sync_metadata();
+                if IsWindowVisible(self.metadata_hwnd) != 0 {
+                    return false;
+                }
+                let focus = GetFocus();
+                if !self.key(VK_TAB as u32) || IsWindowVisible(self.metadata_hwnd) == 0 {
+                    return false;
+                }
+                if GetFocus() != focus {
+                    return false;
+                }
+                if !self.key(VK_TAB as u32) || IsWindowVisible(self.metadata_hwnd) != 0 {
+                    return false;
+                }
+                self.key(VK_TAB as u32);
+                self.metadata.clear();
+                self.sync_metadata();
+                IsWindowVisible(self.metadata_hwnd) == 0
+            })();
+            self.success = result;
+            if result {
+                println!(
+                    "metadata_window_smoke=ok synthetic=true default_off=true tab=true focus_unchanged=true"
+                );
+            }
+            self.close();
         }
     }
     unsafe fn playback_ui(&self) {
@@ -440,6 +531,8 @@ impl App {
             self.reset(true);
             self.book = None;
             self.frame = None;
+            self.metadata.clear();
+            self.sync_metadata();
             self.selected = 0;
             self.reader = ReaderView::default();
             self.pan = (0, 0);
@@ -631,6 +724,9 @@ impl App {
                     let Some(pixels) = prepared.pixels else {
                         return;
                     };
+                    if self.metadata.update(&frame.info.metadata) {
+                        self.sync_metadata();
+                    }
                     self.reader.original = (frame.info.original_width, frame.info.original_height);
                     if let Some(animation) = &frame.info.animation {
                         self.playback.displayed(
@@ -681,6 +777,8 @@ impl App {
                 Event::Error { code, .. } => {
                     self.reset(true);
                     self.frame = None;
+                    self.metadata.clear();
+                    self.sync_metadata();
                     self.text(STATUS, &code.to_string());
                     InvalidateRect(self.hwnd, ptr::null(), 0);
                     if self.smoke != Smoke::None {
@@ -715,6 +813,7 @@ impl App {
             self.closing = Some(Instant::now());
             KillTimer(self.hwnd, RESIZE);
             KillTimer(self.hwnd, RESIZE_TEST);
+            KillTimer(self.hwnd, METADATA_TEST);
             self.stop.store(true, Ordering::Release);
             KillTimer(self.hwnd, ANIMATION);
             self.backend.shutdown();
@@ -836,6 +935,10 @@ impl App {
             ) {
                 Command::Native => return false,
                 Command::Block => {}
+                Command::ToggleMetadata => {
+                    self.metadata.toggle();
+                    self.sync_metadata();
+                }
                 Command::Open { folder } => self.command(if folder { FOLDER } else { OPEN }, 0),
                 Command::Network => {
                     if self.fullscreen.is_some() {
@@ -1049,6 +1152,12 @@ unsafe extern "system" fn procedure(
                 0
             }
             WM_ERASEBKGND => 1,
+            WM_CTLCOLORSTATIC if lparam as HWND == app.metadata_hwnd => {
+                let dc = wparam as windows_sys::Win32::Graphics::Gdi::HDC;
+                SetTextColor(dc, 0x00ffffff);
+                SetBkColor(dc, 0);
+                GetStockObject(BLACK_BRUSH) as isize
+            }
             VIEWPORT_CHANGED => {
                 app.viewport_changed();
                 0
@@ -1066,6 +1175,8 @@ unsafe extern "system" fn procedure(
             WM_TIMER => {
                 if wparam == RESIZE {
                     app.resize_finished();
+                } else if wparam == METADATA_TEST {
+                    app.metadata_test();
                 } else if wparam == RESIZE_TEST {
                     app.resize_test();
                 } else if wparam == ANIMATION {
@@ -1303,6 +1414,34 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                         wide(&format!("{speed}×")).as_ptr() as isize,
                     );
                 }
+                app.metadata_hwnd = CreateWindowExW(
+                    0,
+                    wide("EDIT").as_ptr(),
+                    wide("").as_ptr(),
+                    WS_CHILD
+                        | WS_VSCROLL
+                        | WS_BORDER
+                        | ES_MULTILINE as u32
+                        | ES_READONLY as u32
+                        | ES_AUTOVSCROLL as u32,
+                    12,
+                    116,
+                    480,
+                    300,
+                    hwnd,
+                    ptr::null_mut(),
+                    instance,
+                    ptr::null(),
+                );
+                if app.metadata_hwnd.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                SendMessageW(
+                    app.metadata_hwnd,
+                    WM_SETFONT,
+                    GetStockObject(DEFAULT_GUI_FONT) as usize,
+                    1,
+                );
                 SendMessageW(app.control(SPEED), CB_SETCURSEL, 3, 0);
                 app.playback_ui();
                 app.navigation_ui();
@@ -1346,6 +1485,9 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
             UpdateWindow(hwnd);
             if smoke == Smoke::Resize {
                 SetTimer(hwnd, RESIZE_TEST, 250, None);
+            }
+            if smoke == Smoke::MetadataWindow {
+                SetTimer(hwnd, METADATA_TEST, 300, None);
             }
             if smoke != Smoke::None {
                 SetTimer(

@@ -57,6 +57,12 @@ jobs:
           image=("$GITHUB_WORKSPACE"/dist/*.AppImage)
           GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a dbus-run-session -- \
             /usr/bin/python3 tools/animation-smoke.py --image "${image[0]}"
+      - name: Test metadata overlay from the packaged GUI and worker
+        shell: bash
+        run: |
+          image=("$GITHUB_WORKSPACE"/dist/*.AppImage)
+          GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a dbus-run-session -- \
+            python3 tools/metadata-smoke.py --image "${image[0]}"
       - uses: actions/upload-artifact@v4
         with:
           name: distribution-linux

@@ -2,6 +2,13 @@
 
 이 문서는 실제 반영한 작업을 기록한다. 계획·목표와 검증 범위는 [개발 문서](doc/README.md), 현재 제한은 [구현 상태](doc/08-implementation-status.md)를 따른다. OpenCode 코딩 에이전트를 통한 AI 기반 개발이며, AI 생성·수정 코드와 문서가 포함된다.
 
+## 0.5.4 — 2026-11-19 · Tab 메타데이터 floating layer
+
+- main viewer의 Tab/Shift+Tab 컨트롤 포커스 이동을 제거하고 메타데이터 레이어 토글로 바꿨다. 기본 off이며 이미지에 embedded metadata가 있을 때만 이미지 영역 왼쪽 위에 표시한다. GTK/Win32에 적용하며 modal OS 대화상자의 표준 입력은 유지한다.
+- worker에서 PNG tEXt/zTXt/iTXt/eXIf, JPEG EXIF/XMP/Comment, WebP EXIF/XMP, GIF Comment를 bounded 추출한다. 렌더된 이미지·ZIP/CBZ·애니메이션 next/seek/cache에도 연결하며 원본을 수정하거나 metadata를 로그/디스크에 별도 저장하지 않는다.
+- 표시 텍스트는 최대 32항목·총 32KiB, 값당 4096bytes로 제한하며 제어/방향 제어 문자를 제거한다. EXIF/XMP/text를 markup으로 실행하지 않는다. 입력 스캔/압축 해제 상한·표시 복사 예약·부모 wire 검증을 추가했다. binary ICC 등 모든 metadata 형식을 표시한다는 의미는 아니다.
+- wire v5로 변경했다. GUI/worker는 같은 빌드를 사용해야 한다. 기본 overlay 상태는 프로세스마다 off이며 별도 설정 저장은 없다. v0.5.4로 공개하고 기존 v0.5.3 파일은 교체하지 않는다.
+- Linux Rust 97개(장기 1개 ignored)·GTK metadata 3개·기존 animation/control 8개·Python 배포 7개, Windows-target Wine unit 36개(native symlink 1개 ignored)·UI/platform 5개 통과. 로컬 전체 desktop 회귀는 xvfb-run 부재로 실행하지 못했으며 패키지 CI에서 검증한다.
 ## 0.5.3 — 2026-11-17 · Windows 크기 변경 재그리기
 
 - 드래그 종료에 한정됐던 재렌더 요청을 크기 변경·최대화/복원·전체 화면·UI 숨김/표시에 연결했다. 동기 메시지 재진입에서 `RefCell` borrow 실패로 갱신을 놓치지 않도록 별도 메시지로 처리한다.

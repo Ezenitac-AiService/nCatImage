@@ -721,7 +721,11 @@ impl Worker {
         }
         let mut display = shared
             .budget
-            .reserve(MAX_OUTPUT * ncat_protocol::PRESENTATION_COPIES)
+            .reserve(
+                MAX_OUTPUT * ncat_protocol::PRESENTATION_COPIES
+                    + ncat_protocol::MAX_METADATA_BYTES as u64
+                        * ncat_protocol::METADATA_PRESENTATION_COPIES,
+            )
             .ok_or(ErrorCode::Limit)?;
         let remaining = shared.budget.limit().saturating_sub(shared.budget.used());
         let workspace = if advance.is_some() {
@@ -813,7 +817,10 @@ impl Worker {
         if !guard.allowed(shared) {
             return Err(ErrorCode::Cancelled);
         }
-        display.shrink_to(info.bytes * ncat_protocol::PRESENTATION_COPIES);
+        display.shrink_to(
+            info.bytes * ncat_protocol::PRESENTATION_COPIES
+                + info.metadata_bytes() * ncat_protocol::METADATA_PRESENTATION_COPIES,
+        );
         Ok(Some(Arc::new(Frame {
             info,
             pixels,

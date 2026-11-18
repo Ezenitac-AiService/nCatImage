@@ -28,7 +28,7 @@ def main():
     warning = (
         "WARNING: UNTESTED / Windows 정상 동작 및 실사용 검증이 완료되지 않았습니다.\n"
         "Experimental, unsigned development build. Image display/security/input are not verified.\n"
-        "Initial native CI failed: private owner/DACL required. This resize fix does not fix that error.\n"
+        "Initial native CI failed: private owner/DACL required. This preview does not fix that error.\n"
         "Wine Job Object readback fails; protected decoding is refused. No protection bypass.\n"
         "FTP/SFTP, DPI/accessibility and Linux feature parity remain incomplete.\n"
         "Only Windows system DLLs are imported; no GTK DLL or worker EXE extraction.\n"

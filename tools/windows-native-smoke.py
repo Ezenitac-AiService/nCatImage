@@ -39,6 +39,7 @@ def main():
         (["--self-test"], 0), (["--worker"], 2),
         (["--smoke-window"], 0),
         (["--smoke-resize"], 0),
+        (["--smoke-metadata-window"], 0),
         (["--smoke-pipeline", str(fixture / "page1.png")], 0),
         (["--smoke-pipeline", str(fixture / "sample.cbz")], 0),
         (["--smoke-frame", str(fixture / "sample.cbz")], 0),

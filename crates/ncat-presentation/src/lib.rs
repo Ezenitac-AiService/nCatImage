@@ -3,6 +3,7 @@
 
 use ncat_core::{Direction, fit_size, physical_next};
 pub mod input;
+pub mod metadata;
 pub mod playback;
 
 pub fn interface_shown(enabled: bool, fullscreen: bool) -> bool {

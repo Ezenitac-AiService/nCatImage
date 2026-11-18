@@ -47,6 +47,7 @@ fn main() -> std::process::ExitCode {
         [] => (None, Smoke::None),
         [option] if option == "--smoke-window" => (None, Smoke::Window),
         [option] if option == "--smoke-resize" => (None, Smoke::Resize),
+        [option] if option == "--smoke-metadata-window" => (None, Smoke::MetadataWindow),
         [option, path] if option == "--smoke-frame" => (Some(path.into()), Smoke::Frame),
         [option, path] if option == "--smoke-animation" => (Some(path.into()), Smoke::Animation),
         [option, path] if option == "--smoke-navigation" => (Some(path.into()), Smoke::Navigation),

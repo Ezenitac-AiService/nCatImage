@@ -14,6 +14,7 @@ use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 mod animation;
+mod metadata;
 use animation::AnimationSession;
 
 #[derive(Clone, Copy)]
@@ -384,7 +385,9 @@ impl Book {
         {
             return Err(Error::Limit);
         }
-        let (input, source_path, revision) = self.input(key, output)?;
+        let (mut input, source_path, revision) = self.input(key, output)?;
+        let metadata = metadata::extract(&mut *input);
+        input.seek(SeekFrom::Start(0)).map_err(|_| Error::Io)?;
         let mut reader = ImageReader::new(BufReader::new(input))
             .with_guessed_format()
             .map_err(|_| Error::Corrupt)?;
@@ -431,10 +434,14 @@ impl Book {
         if matches!(
             format,
             ImageFormat::Gif | ImageFormat::Png | ImageFormat::WebP
-        ) && let Some(session) =
+        ) && let Some(mut session) =
             AnimationSession::start(self, key, output, format, orientation, view, workspace)?
         {
             drop(decoder);
+            if Revision::read(&source_path)? != revision {
+                return Err(Error::Changed);
+            }
+            session.metadata = metadata;
             *self.animation.borrow_mut() = Some(session);
             return self.animation_next(output)?.ok_or(Error::Corrupt);
         }
@@ -443,7 +450,9 @@ impl Book {
         if Revision::read(&source_path)? != revision {
             return Err(Error::Changed);
         }
-        render(decoded, output, view, format, None, start)
+        let mut info = render(decoded, output, view, format, None, start)?;
+        info.metadata = metadata;
+        Ok(info)
     }
 
     pub fn animation_next(&self, output: &Path) -> Result<Option<FrameInfo>, Error> {
@@ -514,6 +523,7 @@ fn render(
         format: format!("{format:?}"),
         elapsed_us: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
         animation,
+        metadata: Vec::new(),
     })
 }
 
@@ -594,6 +604,10 @@ mod tests {
                 .unwrap();
         }
         drop(encoder);
+        let mut original = fs::read(&source).unwrap();
+        let trailer = original.len() - 1;
+        original.splice(trailer..trailer, b"\x21\xfe\x05hello\0".iter().copied());
+        fs::write(&source, &original).unwrap();
         let private = root.path().join("private");
         ncat_platform::create_private_directory(&private).unwrap();
         let output = private.join("pixels");
@@ -602,14 +616,17 @@ mod tests {
         let info = book
             .decode(&book.pages[0].key, &output, 100, 100, 32 * 1024 * 1024, 0)
             .unwrap();
+        assert_eq!(info.metadata[0].value, "hello");
         assert_eq!(info.animation.unwrap().index, 0);
         let first = std::fs::read(&output).unwrap();
         let next = book.animation_next(&output).unwrap().unwrap();
         assert_eq!(next.animation.unwrap().index, 1);
+        assert_eq!(next.metadata[0].value, "hello");
         assert_ne!(first, std::fs::read(&output).unwrap());
         let seek = book.animation_seek(&output, 0).unwrap().unwrap();
         assert_eq!(seek.animation.unwrap().index, 0);
         assert_eq!(first, std::fs::read(&output).unwrap());
+        assert_eq!(fs::read(source).unwrap(), original);
     }
     #[test]
     fn actual_read_budget_survives_seek() {

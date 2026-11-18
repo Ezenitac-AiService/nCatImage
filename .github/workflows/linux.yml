@@ -30,3 +30,7 @@ jobs:
         run: |
           GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a dbus-run-session -- \
             /usr/bin/python3 tools/animation-smoke.py --image target/release/ncat-linux
+      - name: Embedded metadata overlay and Tab regression
+        run: |
+          GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a dbus-run-session -- \
+            python3 tools/metadata-smoke.py --image target/release/ncat-linux

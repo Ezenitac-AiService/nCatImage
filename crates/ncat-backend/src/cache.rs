@@ -100,7 +100,9 @@ impl FrameCache {
     }
     fn remove(&mut self, index: usize) {
         if let Some(entry) = self.entries.remove(index) {
-            self.bytes -= entry.frame.info.bytes + entry._metadata.bytes();
+            self.bytes -= entry.frame.info.bytes
+                + entry.frame.info.metadata_bytes()
+                + entry._metadata.bytes();
             self.evictions += 1;
         }
     }
@@ -138,7 +140,7 @@ impl FrameCache {
         budget: &Budget,
     ) -> bool {
         let metadata_bytes = key.target.metadata_bytes();
-        let cost = frame.info.bytes + metadata_bytes;
+        let cost = frame.info.bytes + frame.info.metadata_bytes() + metadata_bytes;
         if cost > self.capacity {
             return false;
         }
@@ -197,6 +199,7 @@ mod tests {
                 format: "Png".into(),
                 elapsed_us: 0,
                 animation: None,
+                metadata: Vec::new(),
             },
             _permit: budget.reserve(12).unwrap(),
         })

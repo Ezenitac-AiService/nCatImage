@@ -6,6 +6,8 @@ v0.4.3 · 2026-11-16. AI 코딩 에이전트 기반 개발이며, 고지 수집�
 
 ## 1. 비신뢰 경계
 
+v0.5.4 metadata 레이어도 같은 경계를 사용한다. optional EXIF/text/XMP는 worker에서 bounded 추출하고 wire v5 parent 검증 후 plain text로만 표시한다. 제어/bidi 제거·32항목/32KiB·기본 off·로그/원본 불변·표시 복사 예약은 [12](12-metadata-overlay.md)에 명시한다. 모든 vendor metadata/ICC 검사나 native Windows 보호 검증 완료를 뜻하지 않는다.
+
 로컬 이미지라고 안전하지 않다. 파일/압축 header·항목명·EXIF/ICC·TIFF 내부 페이지·첫 합성 frame·worker 출력까지 비신뢰다. Rust 메모리 안전성만으로 압축 폭탄·무한 연산·native FFI·디스크 고갈을 막았다고 보지 않는다.
 
 - parser·실제 포맷 식별·압축 index·codec·metadata는 worker에서 수행한다. GUI의 기본 file image loader나 전체 아카이브 추출로 우회하지 않는다.

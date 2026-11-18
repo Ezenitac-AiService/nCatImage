@@ -7,6 +7,7 @@ use image::{
 use ncat_protocol::{AnimationInfo, MAX_ANIMATION_FRAMES, MAX_FRAME_DELAY_MS, MIN_FRAME_DELAY_MS};
 
 pub(super) struct AnimationSession {
+    pub(super) metadata: Vec<ncat_protocol::MetadataEntry>,
     frames: Frames<'static>,
     key: PageKey,
     source_path: PathBuf,
@@ -159,6 +160,7 @@ impl AnimationSession {
             return Ok(None);
         };
         Ok(Some(Self {
+            metadata: Vec::new(),
             frames,
             key: key.clone(),
             source_path,
@@ -240,7 +242,8 @@ impl AnimationSession {
             return Err(Error::Limit);
         }
         decoded.apply_orientation(self.orientation);
-        let rendered = render(decoded, output, self.view, self.format, Some(info), start)?;
+        let mut rendered = render(decoded, output, self.view, self.format, Some(info), start)?;
+        rendered.metadata = self.metadata.clone();
         if Revision::read(&self.source_path)? != self.revision {
             return Err(Error::Changed);
         }

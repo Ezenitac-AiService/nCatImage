@@ -48,6 +48,7 @@ pub enum Command {
     Fullscreen,
     ToggleInterface,
     Page(super::PageKey),
+    ToggleMetadata,
     First,
     Last,
     ZoomIn,
@@ -61,6 +62,13 @@ pub enum Command {
 pub fn command(key: Key, modifiers: Modifiers, controls_have_input: bool) -> Command {
     use Command as C;
     use Key as K;
+    if key == K::Tab {
+        return if !modifiers.primary && !modifiers.alternate && !modifiers.system {
+            C::ToggleMetadata
+        } else {
+            C::Block
+        };
+    }
     if modifiers.primary {
         match key {
             K::Open => {
@@ -90,9 +98,6 @@ pub fn command(key: Key, modifiers: Modifiers, controls_have_input: bool) -> Com
     if controls_have_input {
         return C::Native;
     }
-    if key == K::Tab {
-        return C::Block;
-    }
     if modifiers.primary || modifiers.alternate || modifiers.system {
         return C::Native;
     }
@@ -118,6 +123,40 @@ pub fn command(key: Key, modifiers: Modifiers, controls_have_input: bool) -> Com
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tab_never_navigates_controls_and_modified_tab_does_not_toggle() {
+        for focused in [false, true] {
+            for shift in [false, true] {
+                assert_eq!(
+                    command(
+                        Key::Tab,
+                        Modifiers {
+                            shift,
+                            ..Modifiers::default()
+                        },
+                        focused
+                    ),
+                    Command::ToggleMetadata
+                );
+            }
+            for modifiers in [
+                Modifiers {
+                    primary: true,
+                    ..Modifiers::default()
+                },
+                Modifiers {
+                    alternate: true,
+                    ..Modifiers::default()
+                },
+                Modifiers {
+                    system: true,
+                    ..Modifiers::default()
+                },
+            ] {
+                assert_eq!(command(Key::Tab, modifiers, focused), Command::Block);
+            }
+        }
+    }
     #[test]
     fn frame_commands_work_with_toolbar_focus_but_not_os_modifiers() {
         for (key, expected) in [
@@ -152,11 +191,11 @@ mod tests {
         );
         assert_eq!(
             command(Key::Tab, Modifiers::default(), false),
-            Command::Block
+            Command::ToggleMetadata
         );
         assert_eq!(
             command(Key::Tab, Modifiers::default(), true),
-            Command::Native
+            Command::ToggleMetadata
         );
         assert_eq!(
             command(
