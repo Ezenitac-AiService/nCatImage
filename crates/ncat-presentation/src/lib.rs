@@ -7,6 +7,29 @@ pub mod metadata;
 pub mod playback;
 pub mod reader_bars;
 
+pub fn reader_title(
+    app: &str,
+    page: Option<(usize, Option<usize>, &str)>,
+    animation: playback::Playback,
+    status: &str,
+) -> String {
+    use std::fmt::Write;
+    let mut title = String::new();
+    if let Some((index, total, name)) = page {
+        let total = total.map_or("?".into(), |n| n.to_string());
+        let _ = write!(title, "{index}/{total} · {name} · ");
+    }
+    if animation.active {
+        let total = animation.total.map_or("?".into(), |n| n.to_string());
+        let _ = write!(title, "프레임 {}/{} · ", animation.index + 1, total);
+    }
+    if !status.is_empty() {
+        let _ = write!(title, "{status} — ");
+    }
+    title.push_str(app);
+    title
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageKey {
     Next,
@@ -96,6 +119,24 @@ impl ReaderView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_distinguishes_page_and_frame_without_playback_labels() {
+        let mut animation = playback::Playback::default();
+        assert_eq!(
+            reader_title("Viewer", None, animation, "열기"),
+            "열기 — Viewer"
+        );
+        animation.displayed(1, 0, 100);
+        animation.paused = true;
+        let page = Some((3, Some(9), "photo.gif"));
+        assert_eq!(
+            reader_title("Viewer", page, animation, ""),
+            "3/9 · photo.gif · 프레임 2/? · Viewer"
+        );
+        animation.total = Some(6);
+        assert!(reader_title("Viewer", page, animation, "GIF").contains("프레임 2/6"));
+    }
 
     #[test]
     fn direction_only_changes_horizontal_input() {

@@ -26,7 +26,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{Com::*, LibraryLoader::GetModuleHandleW},
     UI::{
-        Controls::{Dialogs::*, WM_MOUSELEAVE},
+        Controls::{Dialogs::*, EM_SETLIMITTEXT, WM_MOUSELEAVE},
         Input::KeyboardAndMouse::*,
         Shell::*,
         WindowsAndMessaging::*,
@@ -35,18 +35,22 @@ use windows_sys::Win32::{
 
 const RESULT: u32 = WM_APP + 1;
 const VIEWPORT_CHANGED: u32 = WM_APP + 2;
+const VIEWPORT_MINIMIZED: usize = 1;
+const VIEWPORT_RESIZE_FINISHED: usize = 2;
+const LIVE_RESIZE_TEST: u32 = WM_APP + 3;
 const ANIMATION: usize = 1;
 const SHUTDOWN: usize = 2;
 const DEADLINE: usize = 3;
 const RESIZE: usize = 4;
 const RESIZE_TEST: usize = 5;
 const METADATA_TEST: usize = 6;
+const GLASS_SETTLE: usize = 7;
 const VIEW_SETTLE_MS: u32 = 100;
-const TOP_SIZE: (i32, i32) = (622, 44);
-const BOTTOM_SIZE: (i32, i32) = (676, 104);
+const TOP_SIZE: (i32, i32) = (306, 44);
+const BOTTOM_SIZE: (i32, i32) = (252, 44);
+const ANIMATION_SIZE: (i32, i32) = (318, 44);
 const OPEN: u16 = 101;
 const FOLDER: u16 = 102;
-const ADDRESS: u16 = 103;
 const CONNECT: u16 = 104;
 const PREVIOUS: u16 = 105;
 const PAGE: u16 = 106;
@@ -64,16 +68,23 @@ const PLAY: u16 = 117;
 const SPEED: u16 = 118;
 const FRAME_NUMBER: u16 = 119;
 const FRAME_GO: u16 = 120;
-const FRAME_INFO: u16 = 121;
-const STATUS: u16 = 122;
 const TOP_PIN: u16 = 123;
 const BOTTOM_PIN: u16 = 124;
+const METADATA: u16 = 125;
+const INFO_SIZE: (i32, i32) = (52, 44);
 
 fn control_bar(id: u16) -> Bar {
     match id {
-        OPEN | FOLDER | ADDRESS | CONNECT | DIRECTION | FULLSCREEN | TOP_PIN => Bar::Top,
+        PREVIOUS | PAGE | PAGE_GO | NEXT | DIRECTION | TOP_PIN => Bar::Top,
         _ => Bar::Bottom,
     }
+}
+
+fn animation_control(id: u16) -> bool {
+    matches!(
+        id,
+        FRAME_PREVIOUS | FRAME_NEXT | PLAY | SPEED | FRAME_NUMBER | FRAME_GO
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -168,6 +179,14 @@ impl Drop for PaintBuffer {
     }
 }
 
+struct PatternBrush(HBRUSH);
+impl Drop for PatternBrush {
+    fn drop(&mut self) {
+        // SAFETY: only our WM_CTLCOLOR handler lends this brush to Win32.
+        unsafe { DeleteObject(self.0) };
+    }
+}
+
 fn bitmap_info(width: i32, height: i32) -> BITMAPINFO {
     BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
@@ -197,14 +216,21 @@ impl Drop for Window {
 struct App {
     metadata: ncat_presentation::metadata::MetadataOverlay,
     metadata_hwnd: HWND,
-    metadata_bounds: Cell<Option<(i32, i32, i32)>>,
+    metadata_bounds: Cell<Option<(i32, i32, i32, i32)>>,
     hwnd: HWND,
     controls: Vec<(u16, HWND, i32, i32)>,
     paint_buffer: Option<PaintBuffer>,
     bar_tint: Option<PaintBuffer>,
+    glass_sample: Option<PaintBuffer>,
+    metadata_glass: Option<PaintBuffer>,
+    metadata_brush: Option<PatternBrush>,
+    glass_pending: bool,
     bars: ReaderBars,
     visible_bars: [bool; 2],
+    visible_animation: bool,
+    visible_info: bool,
     bar_layout_size: Option<(i32, i32)>,
+    in_size_move: bool,
     live_sizing: bool,
     tracking_mouse: HWND,
     backend: Backend,
@@ -213,6 +239,8 @@ struct App {
     book: Option<Arc<Book>>,
     frame: Option<Display>,
     selected: usize,
+    status: String,
+    last_title: RefCell<String>,
     reader: ReaderView,
     playback: Playback,
     animation_view: View,
@@ -235,6 +263,7 @@ struct App {
     resize_test_expected: Option<(View, u32)>,
     paint_count: u32,
     buffered_picture: Option<(i32, i32)>,
+    glass_draw_count: u32,
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -293,9 +322,16 @@ impl App {
                 controls: Vec::new(),
                 paint_buffer: None,
                 bar_tint: None,
+                glass_sample: None,
+                metadata_glass: None,
+                metadata_brush: None,
+                glass_pending: false,
                 bars: ReaderBars::default(),
                 visible_bars: [false; 2],
+                visible_animation: false,
+                visible_info: false,
                 bar_layout_size: None,
+                in_size_move: false,
                 live_sizing: false,
                 tracking_mouse: ptr::null_mut(),
                 backend,
@@ -304,6 +340,8 @@ impl App {
                 book: None,
                 frame: None,
                 selected: 0,
+                status: "우클릭: 열기".into(),
+                last_title: RefCell::new(String::new()),
                 reader: ReaderView::default(),
                 playback: Playback::default(),
                 animation_view: View::default(),
@@ -326,6 +364,7 @@ impl App {
                 resize_test_expected: None,
                 paint_count: 0,
                 buffered_picture: None,
+                glass_draw_count: 0,
             },
             sender,
         ))
@@ -379,12 +418,45 @@ impl App {
             Bar::Top => (TOP_SIZE, 8),
             Bar::Bottom => (BOTTOM_SIZE, viewport.bottom - BOTTOM_SIZE.1 - 8),
         };
-        let left = ((viewport.right - width) / 2).max(0);
+        let left = if bar == Bar::Top {
+            ((viewport.right - width) / 2).max(0)
+        } else {
+            (viewport.right - width - 8).max(0)
+        };
         RECT {
             left,
             right: left + width,
             top,
             bottom: top + height,
+        }
+    }
+
+    fn animation_rect(viewport: RECT) -> RECT {
+        RECT {
+            left: 8,
+            right: 8 + ANIMATION_SIZE.0,
+            top: viewport.bottom - ANIMATION_SIZE.1 - 8,
+            bottom: viewport.bottom - 8,
+        }
+    }
+
+    fn control_rect(id: u16, viewport: RECT) -> RECT {
+        if id == METADATA {
+            Self::info_rect(viewport)
+        } else if animation_control(id) {
+            Self::animation_rect(viewport)
+        } else {
+            Self::bar_rect(control_bar(id), viewport)
+        }
+    }
+
+    fn info_rect(viewport: RECT) -> RECT {
+        let right = viewport.right - 8;
+        RECT {
+            left: (right - INFO_SIZE.0).max(0),
+            right,
+            top: 8,
+            bottom: 8 + INFO_SIZE.1,
         }
     }
 
@@ -399,18 +471,31 @@ impl App {
             let moved = self.bar_layout_size != Some(size);
             self.bar_layout_size = Some(size);
             let focus = GetFocus();
-            let editing = [ADDRESS, PAGE, FRAME_NUMBER, SPEED]
+            let editing = [PAGE, FRAME_NUMBER, SPEED]
                 .into_iter()
                 .find(|&id| !focus.is_null() && focus == self.control(id))
                 .map(control_bar);
-            let next = [Bar::Top, Bar::Bottom].map(|bar| self.bars.visible(bar, editing));
-            let changed = next != self.visible_bars;
+            let next = [Bar::Top, Bar::Bottom]
+                .map(|bar| !self.live_sizing && self.bars.visible(bar, editing));
+            let animation = next[Bar::Bottom as usize] && self.playback.active;
+            let info = !self.live_sizing;
+            let changed = next != self.visible_bars
+                || animation != self.visible_animation
+                || info != self.visible_info;
+            let show = |id| {
+                if id == METADATA {
+                    info
+                } else if animation_control(id) {
+                    animation
+                } else {
+                    next[control_bar(id) as usize]
+                }
+            };
             if moved || changed {
                 let mut batch = BeginDeferWindowPos(self.controls.len() as i32);
                 for &(id, hwnd, x, y) in &self.controls {
-                    let bar = control_bar(id);
                     if !batch.is_null() {
-                        let rect = Self::bar_rect(bar, viewport);
+                        let rect = Self::control_rect(id, viewport);
                         batch = DeferWindowPos(
                             batch,
                             hwnd,
@@ -419,14 +504,13 @@ impl App {
                             rect.top + y,
                             0,
                             0,
-                            Self::bar_position_flags(moved, changed, next[bar as usize]),
+                            Self::bar_position_flags(moved, changed, show(id)),
                         );
                     }
                 }
                 if batch.is_null() || EndDeferWindowPos(batch) == 0 {
                     for &(id, hwnd, x, y) in &self.controls {
-                        let bar = control_bar(id);
-                        let rect = Self::bar_rect(bar, viewport);
+                        let rect = Self::control_rect(id, viewport);
                         SetWindowPos(
                             hwnd,
                             ptr::null_mut(),
@@ -434,19 +518,21 @@ impl App {
                             rect.top + y,
                             0,
                             0,
-                            Self::bar_position_flags(moved, changed, next[bar as usize]),
+                            Self::bar_position_flags(moved, changed, show(id)),
                         );
                     }
                 }
                 self.visible_bars = next;
+                self.visible_animation = animation;
+                self.visible_info = info;
                 self.metadata_layout();
-                // Do not copy individual controls over the old image/bar while
-                // resizing. Repaint the parent background and children together.
+                // Let USER32 invalidate vacated child rectangles as well as
+                // repainting the composited backdrop and the controls.
                 RedrawWindow(
                     self.hwnd,
                     ptr::null(),
                     ptr::null_mut(),
-                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE,
                 );
             }
         }
@@ -456,7 +542,6 @@ impl App {
         SWP_NOSIZE
             | SWP_NOZORDER
             | SWP_NOACTIVATE
-            | SWP_NOREDRAW
             | SWP_NOCOPYBITS
             | if moved { 0 } else { SWP_NOMOVE }
             | if !changed {
@@ -486,6 +571,7 @@ impl App {
 
     unsafe fn track_bars(&mut self, target: HWND, leaving: bool) {
         unsafe {
+            let previous = self.tracking_mouse;
             if leaving && self.tracking_mouse == target {
                 self.tracking_mouse = ptr::null_mut();
             }
@@ -498,6 +584,13 @@ impl App {
                 };
                 if TrackMouseEvent(&mut track) != 0 {
                     self.tracking_mouse = target;
+                }
+            }
+            if previous != self.tracking_mouse {
+                for hwnd in [previous, self.tracking_mouse] {
+                    if !hwnd.is_null() && hwnd != self.hwnd {
+                        InvalidateRect(hwnd, ptr::null(), 0);
+                    }
                 }
             }
             let viewport = self.viewport();
@@ -532,32 +625,24 @@ impl App {
                 .lines()
                 .map(|line| line.chars().count().div_ceil(columns).max(1))
                 .sum();
-            let top = if self.visible_bars[Bar::Top as usize] {
-                TOP_SIZE.1 + 18
-            } else {
-                12
-            };
-            let bottom = if self.visible_bars[Bar::Bottom as usize] {
-                BOTTOM_SIZE.1 + 12
-            } else {
-                12
-            };
+            let top = Self::info_rect(viewport).bottom + 8;
+            let bottom = BOTTOM_SIZE.1 + 12;
             let height = (viewport.bottom - top - bottom)
                 .min(300)
                 .min((lines * 20 + 20) as i32);
             let show = self.metadata.visible() && width >= 80 && height >= 40;
-            let bounds = (top, width, height);
+            let bounds = (viewport.right - width - 12, top, width, height);
             if show && self.metadata_bounds.get() != Some(bounds) {
+                self.metadata_bounds.set(Some(bounds));
                 SetWindowPos(
                     self.metadata_hwnd,
                     ptr::null_mut(),
-                    12,
                     bounds.0,
+                    bounds.1,
                     width,
                     height,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
                 );
-                self.metadata_bounds.set(Some(bounds));
             }
             set_child_visible(self.metadata_hwnd, show);
         }
@@ -572,6 +657,21 @@ impl App {
             }
             self.metadata_layout();
             self.invalidate_picture();
+        }
+    }
+
+    unsafe fn toggle_metadata(&mut self) {
+        self.metadata.toggle();
+        unsafe {
+            self.text(
+                METADATA,
+                if self.metadata.enabled {
+                    "메타데이터 닫기"
+                } else {
+                    "메타데이터 열기"
+                },
+            );
+            self.sync_metadata();
         }
     }
     unsafe fn metadata_test(&mut self) {
@@ -599,13 +699,27 @@ impl App {
                     return false;
                 }
                 if GetFocus() != focus
-                    || self.metadata_bounds.get().is_none_or(|(top, _, _)| {
-                        top < Self::bar_rect(Bar::Top, self.viewport()).bottom
-                    })
+                    || self
+                        .metadata_bounds
+                        .get()
+                        .is_none_or(|(left, top, width, _)| {
+                            top < Self::info_rect(self.viewport()).bottom
+                                || left + width + 12 != self.viewport().right
+                        })
                 {
                     return false;
                 }
-                if !self.key(VK_TAB as u32) || IsWindowVisible(self.metadata_hwnd) != 0 {
+                self.live_sizing = true;
+                self.layout();
+                self.metadata_layout();
+                let kept_during_resize = IsWindowVisible(self.metadata_hwnd) != 0;
+                self.live_sizing = false;
+                self.layout();
+                if !kept_during_resize {
+                    return false;
+                }
+                self.command(METADATA, 0);
+                if IsWindowVisible(self.metadata_hwnd) != 0 {
                     return false;
                 }
                 self.key(VK_TAB as u32);
@@ -623,7 +737,7 @@ impl App {
             self.close();
         }
     }
-    unsafe fn playback_ui(&self) {
+    unsafe fn playback_ui(&mut self) {
         unsafe {
             let p = self.playback;
             for id in [FRAME_PREVIOUS, FRAME_NEXT, PLAY, SPEED] {
@@ -634,31 +748,14 @@ impl App {
             }
             self.text(
                 PLAY,
-                if p.paused {
-                    "재생 /"
+                if p.paused || p.ended {
+                    "재생"
                 } else {
-                    "일시정지 /"
+                    "일시정지"
                 },
             );
-            self.text(
-                FRAME_INFO,
-                &if p.active {
-                    format!(
-                        "프레임 {}/{} · {}",
-                        p.index + 1,
-                        p.total.map_or("?".into(), |n| n.to_string()),
-                        if p.ended {
-                            "종료"
-                        } else if p.paused {
-                            "일시정지"
-                        } else {
-                            "재생"
-                        }
-                    )
-                } else {
-                    "애니메이션 없음".into()
-                },
-            );
+            self.update_title();
+            self.layout();
         }
     }
     unsafe fn queue_resize(&self) {
@@ -679,6 +776,15 @@ impl App {
             self.layout();
             self.metadata_layout();
             self.queue_view_refresh();
+        }
+    }
+
+    unsafe fn refresh_glass(&self) {
+        unsafe {
+            InvalidateRect(self.hwnd, ptr::null(), 0);
+            if IsWindowVisible(self.metadata_hwnd) != 0 {
+                InvalidateRect(self.metadata_hwnd, ptr::null(), 1);
+            }
         }
     }
     unsafe fn queue_view_refresh(&mut self) {
@@ -745,6 +851,14 @@ impl App {
             }
             match self.resize_test_phase {
                 0 => {
+                    if self.smoke == Smoke::Resize
+                        && address_dialog(self.hwnd, true).as_deref()
+                            != Some("smb://server/share/book.cbz")
+                    {
+                        eprintln!("nCatImage: address dialog did not return its edit value");
+                        self.close();
+                        return;
+                    }
                     SetWindowPos(
                         self.hwnd,
                         ptr::null_mut(),
@@ -796,17 +910,8 @@ impl App {
                     ShowWindow(self.hwnd, SW_RESTORE);
                 }
                 9 => {
-                    for (width, height) in [(780, 470), (940, 700), (720, 300), (860, 570)] {
-                        SetWindowPos(
-                            self.hwnd,
-                            ptr::null_mut(),
-                            0,
-                            0,
-                            width,
-                            height,
-                            SWP_NOMOVE | SWP_NOZORDER,
-                        );
-                    }
+                    // Exercise WM_SIZE with App available, like a real drag.
+                    PostMessageW(self.hwnd, LIVE_RESIZE_TEST, 0, 0);
                 }
                 10 | 11 if self.smoke == Smoke::ResizeFrame => {
                     let generation = self.backend.generation();
@@ -827,6 +932,11 @@ impl App {
                     }
                 }
                 _ => {
+                    if self.smoke == Smoke::ResizeFrame && self.glass_draw_count == 0 {
+                        eprintln!("nCatImage: no panel rendered the softened image");
+                        self.close();
+                        return;
+                    }
                     self.success = true;
                     self.close();
                     return;
@@ -846,14 +956,20 @@ impl App {
                 return false;
             }
             self.controls.iter().all(|&(id, hwnd, x, y)| {
-                let bar = control_bar(id);
-                let expected = Self::bar_rect(bar, viewport);
+                let expected = Self::control_rect(id, viewport);
+                let expected_visible = if id == METADATA {
+                    self.visible_info
+                } else if animation_control(id) {
+                    self.visible_animation
+                } else {
+                    self.visible_bars[control_bar(id) as usize]
+                };
                 let mut actual = RECT::default();
                 let visible = IsWindowVisible(hwnd) != 0;
                 let valid = GetWindowRect(hwnd, &mut actual) != 0
                     && actual.left - origin.x == expected.left + x
                     && actual.top - origin.y == expected.top + y
-                    && visible == self.visible_bars[bar as usize];
+                    && visible == expected_visible;
                 if !valid {
                     eprintln!(
                         "bar control {id}: actual=({}, {}, {visible}) expected=({}, {}, {})",
@@ -861,7 +977,7 @@ impl App {
                         actual.top - origin.y,
                         expected.left + x,
                         expected.top + y,
-                        self.visible_bars[bar as usize]
+                        expected_visible
                     );
                 }
                 valid
@@ -887,24 +1003,36 @@ impl App {
             for id in [PAGE, PAGE_GO] {
                 EnableWindow(self.control(id), i32::from(len > 0));
             }
-            if let Some(book) = &self.book {
-                let name = book
-                    .pages
-                    .get(self.selected)
-                    .map_or("", |page| page.name.as_str());
-                let title = format!(
-                    "{} / {} · {} — nCatImage v{} [UNTESTED Windows]",
-                    self.selected + 1,
-                    if book.complete {
-                        book.pages.len().to_string()
-                    } else {
-                        "분석 중".into()
-                    },
-                    name,
-                    env!("CARGO_PKG_VERSION")
-                );
-                SetWindowTextW(self.hwnd, wide(&title).as_ptr());
-            }
+            self.update_title();
+        }
+    }
+
+    unsafe fn set_status(&mut self, text: &str) {
+        self.status = text.into();
+        unsafe { self.update_title() };
+    }
+
+    unsafe fn update_title(&self) {
+        let page = self.book.as_ref().map(|book| {
+            let name = book
+                .pages
+                .get(self.selected)
+                .map_or("", |page| page.name.as_str());
+            (
+                self.selected + 1,
+                book.complete.then_some(book.pages.len()),
+                name,
+            )
+        });
+        let title = ncat_presentation::reader_title(
+            concat!("nCatImage v", env!("CARGO_PKG_VERSION")),
+            page,
+            self.playback,
+            &self.status,
+        );
+        if *self.last_title.borrow() != title {
+            unsafe { SetWindowTextW(self.hwnd, wide(&title).as_ptr()) };
+            self.last_title.replace(title);
         }
     }
     unsafe fn reset(&mut self, autoplay: bool) {
@@ -931,12 +1059,12 @@ impl App {
             self.pan = (0, 0);
             self.animation_view = self.view();
             if let Err(code) = self.backend.open(path, self.animation_view) {
-                self.text(STATUS, &code.to_string());
+                self.set_status(&code.to_string());
             } else {
-                self.text(STATUS, "읽는 중…");
+                self.set_status("읽는 중…");
             }
             self.navigation_ui();
-            InvalidateRect(self.hwnd, ptr::null(), 0);
+            self.invalidate_picture();
             self.controls_input = false;
             SetFocus(self.hwnd);
         }
@@ -955,7 +1083,7 @@ impl App {
             self.selected = index;
             self.animation_view = self.view();
             if self.backend.load(book, index, self.animation_view).is_ok() {
-                self.text(STATUS, "읽는 중 · 이전 페이지 표시 중");
+                self.set_status("읽는 중…");
             }
             self.navigation_ui();
         }
@@ -1139,25 +1267,29 @@ impl App {
                     } else {
                         self.reset(true);
                     }
-                    self.text(
-                        STATUS,
-                        &format!(
-                            "{} · {}×{} · {:.1} MiB 예약",
-                            frame.info.format,
-                            frame.info.original_width,
-                            frame.info.original_height,
-                            self.backend.budget_used() as f64 / 1048576.0
-                        ),
-                    );
+                    self.set_status(&format!(
+                        "{} · {}×{}",
+                        frame.info.format, frame.info.original_width, frame.info.original_height,
+                    ));
                     let animated = frame.info.animation.is_some();
                     let first_frame = self.frame.is_none();
                     self.frame = Some(Display {
                         frame,
                         bgra: pixels,
                     });
+                    self.refresh_glass();
                     self.playback_ui();
+                    if matches!(self.smoke, Smoke::Frame | Smoke::Animation)
+                        && (self.visible_animation != animated
+                            || (IsWindowVisible(self.control(PLAY)) != 0) != animated
+                            || self.last_title.borrow().contains("프레임 ") != animated)
+                    {
+                        eprintln!("nCatImage: animation panel or title does not match the image");
+                        self.close();
+                        return;
+                    }
                     self.schedule();
-                    self.invalidate_picture();
+                    InvalidateRect(self.hwnd, ptr::null(), 0);
                     self.smoke_frames += 1;
                     if self.smoke == Smoke::ResizeFrame && first_frame {
                         SetTimer(self.hwnd, RESIZE_TEST, 250, None);
@@ -1190,8 +1322,8 @@ impl App {
                     self.frame = None;
                     self.metadata.clear();
                     self.sync_metadata();
-                    self.text(STATUS, &code.to_string());
-                    InvalidateRect(self.hwnd, ptr::null(), 0);
+                    self.set_status(&code.to_string());
+                    self.invalidate_picture();
                     if self.smoke != Smoke::None {
                         eprintln!("nCatImage: GUI smoke error={code:?}");
                         self.close();
@@ -1267,10 +1399,14 @@ impl App {
                         self.open(path);
                     }
                 }
-                CONNECT => match crate::address::parse(&self.value(ADDRESS)) {
-                    Ok(path) => self.open(path),
-                    Err(text) => self.text(STATUS, text),
-                },
+                CONNECT => {
+                    if let Some(address) = address_dialog(self.hwnd, false) {
+                        match crate::address::parse(&address) {
+                            Ok(path) => self.open(path),
+                            Err(text) => self.set_status(text),
+                        }
+                    }
+                }
                 PREVIOUS => self.navigate(false),
                 NEXT => self.navigate(true),
                 PAGE_GO => {
@@ -1288,6 +1424,7 @@ impl App {
                     self.bars.toggle_pin(control_bar(id));
                     self.sync_pins();
                 }
+                METADATA => self.toggle_metadata(),
                 SMALLER => self.zoom(1.0 / 1.25),
                 FIT => self.zoom(0.0),
                 LARGER => self.zoom(1.25),
@@ -1327,11 +1464,7 @@ impl App {
             };
             if key == VK_RETURN as u32 {
                 let focus = GetFocus();
-                for (id, action) in [
-                    (PAGE, PAGE_GO),
-                    (FRAME_NUMBER, FRAME_GO),
-                    (ADDRESS, CONNECT),
-                ] {
+                for (id, action) in [(PAGE, PAGE_GO), (FRAME_NUMBER, FRAME_GO)] {
                     if focus == self.control(id) {
                         self.command(action, 0);
                         return true;
@@ -1371,26 +1504,11 @@ impl App {
                 Command::Native => return false,
                 Command::Block => {}
                 Command::ToggleMetadata => {
-                    self.metadata.toggle();
-                    self.sync_metadata();
+                    self.toggle_metadata();
                 }
                 Command::Open { folder } => self.command(if folder { FOLDER } else { OPEN }, 0),
                 Command::Network => {
-                    if self.fullscreen.is_some() {
-                        self.fullscreen();
-                    }
-                    self.controls_input = true;
-                    if !self.visible_bars[Bar::Top as usize] {
-                        self.bars.point(
-                            Some(0),
-                            self.viewport().bottom,
-                            14,
-                            TOP_SIZE.1,
-                            BOTTOM_SIZE.1,
-                        );
-                        self.layout();
-                    }
-                    SetFocus(self.control(ADDRESS));
+                    self.command(CONNECT, 0);
                 }
                 Command::Quit => self.close(),
                 Command::Fullscreen => self.fullscreen(),
@@ -1570,7 +1688,7 @@ impl App {
         // SAFETY: this paint runs on the owning UI thread. Temporary regions
         // and the saved clip are released before returning to the caller.
         unsafe {
-            if !self.visible_bars.iter().any(|&visible| visible) {
+            if !self.visible_info && !self.visible_bars.iter().any(|&visible| visible) {
                 return;
             }
             PaintBuffer::ensure(&mut self.bar_tint, dc, 1, 1);
@@ -1588,19 +1706,30 @@ impl App {
                     brush,
                 );
             }
-            for bar in [Bar::Top, Bar::Bottom] {
-                if !self.visible_bars[bar as usize] {
+            for (r, visible) in [
+                (
+                    Self::bar_rect(Bar::Top, viewport),
+                    self.visible_bars[Bar::Top as usize],
+                ),
+                (
+                    Self::bar_rect(Bar::Bottom, viewport),
+                    self.visible_bars[Bar::Bottom as usize],
+                ),
+                (Self::animation_rect(viewport), self.visible_animation),
+                (Self::info_rect(viewport), self.visible_info),
+            ] {
+                if !visible {
                     continue;
                 }
-                let r = Self::bar_rect(bar, viewport);
                 let region = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, 20, 20);
                 if region.is_null() {
                     continue;
                 }
                 let saved = SaveDC(dc);
                 let blended = if saved != 0 {
-                    let ok = ExtSelectClipRgn(dc, region, RGN_AND) != RGN_ERROR
-                        && self.bar_tint.as_ref().is_some_and(|tint| {
+                    let ok = if ExtSelectClipRgn(dc, region, RGN_AND) != RGN_ERROR {
+                        self.draw_glass_sample(dc, viewport, r, r);
+                        self.bar_tint.as_ref().is_some_and(|tint| {
                             GdiAlphaBlend(
                                 dc,
                                 r.left,
@@ -1615,11 +1744,14 @@ impl App {
                                 BLENDFUNCTION {
                                     BlendOp: AC_SRC_OVER as u8,
                                     BlendFlags: 0,
-                                    SourceConstantAlpha: 225,
+                                    SourceConstantAlpha: 198,
                                     AlphaFormat: 0,
                                 },
                             ) != 0
-                        });
+                        })
+                    } else {
+                        false
+                    };
                     RestoreDC(dc, saved);
                     ok
                 } else {
@@ -1628,8 +1760,150 @@ impl App {
                 if !blended {
                     FillRgn(dc, region, brush);
                 }
+                SetDCBrushColor(dc, 0x64605b);
+                FrameRgn(dc, region, brush, 1, 1);
+                SetDCBrushColor(dc, 0x181818);
                 DeleteObject(region);
             }
+        }
+    }
+
+    // Down/up-sampling softens only the content behind a panel. One tiny DIB
+    // is reused by all panels; native text and controls never enter the sample.
+    unsafe fn draw_glass_sample(&mut self, dc: HDC, viewport: RECT, panel: RECT, dest: RECT) {
+        const STEP: i32 = 10;
+        if self.live_sizing || self.glass_pending || self.frame.is_none() {
+            return;
+        }
+        let (w, h) = self.picture_dimensions(viewport);
+        let dx = (w - viewport.right).max(0) / 2;
+        let dy = (h - viewport.bottom).max(0) / 2;
+        let x = (viewport.right - w) / 2 + self.pan.0.clamp(-dx, dx);
+        let y = (viewport.bottom - h) / 2 + self.pan.1.clamp(-dy, dy);
+        let sw = (panel.right - panel.left + STEP - 1) / STEP;
+        let sh = (panel.bottom - panel.top + STEP - 1) / STEP;
+        if !(1..=128).contains(&sw) || !(1..=128).contains(&sh) {
+            return;
+        }
+        unsafe {
+            PaintBuffer::ensure(&mut self.glass_sample, dc, sw, sh);
+            let (Some(sample), Some(display)) = (&self.glass_sample, &self.frame) else {
+                return;
+            };
+            let bounds = RECT {
+                right: sw,
+                bottom: sh,
+                ..Default::default()
+            };
+            let saved = SaveDC(sample.dc);
+            if saved == 0 {
+                return;
+            }
+            IntersectClipRect(sample.dc, 0, 0, sw, sh);
+            SetDCBrushColor(sample.dc, 0x202020);
+            FillRect(sample.dc, &bounds, GetStockObject(DC_BRUSH));
+            SetStretchBltMode(sample.dc, HALFTONE);
+            SetBrushOrgEx(sample.dc, 0, 0, ptr::null_mut());
+            let width = display.frame.info.width as i32;
+            let height = display.frame.info.height as i32;
+            StretchDIBits(
+                sample.dc,
+                (x - panel.left).div_euclid(STEP),
+                (y - panel.top).div_euclid(STEP),
+                (w / STEP).max(1),
+                (h / STEP).max(1),
+                0,
+                0,
+                width,
+                height,
+                display.bgra.as_ptr().cast(),
+                &bitmap_info(width, height),
+                DIB_RGB_COLORS,
+                SRCCOPY,
+            );
+            RestoreDC(sample.dc, saved);
+            SetStretchBltMode(dc, HALFTONE);
+            SetBrushOrgEx(dc, 0, 0, ptr::null_mut());
+            if StretchBlt(
+                dc,
+                dest.left,
+                dest.top,
+                dest.right - dest.left,
+                dest.bottom - dest.top,
+                sample.dc,
+                0,
+                0,
+                sw,
+                sh,
+                SRCCOPY,
+            ) != 0
+            {
+                self.glass_draw_count = self.glass_draw_count.saturating_add(1);
+            }
+        }
+    }
+
+    unsafe fn metadata_background(&mut self, dc: HDC) -> HBRUSH {
+        unsafe {
+            let Some((left, top, width, height)) = self.metadata_bounds.get() else {
+                return GetStockObject(BLACK_BRUSH);
+            };
+            PaintBuffer::ensure(&mut self.metadata_glass, dc, width, height);
+            PaintBuffer::ensure(&mut self.bar_tint, dc, 1, 1);
+            let (Some(buffer), Some(tint)) = (&self.metadata_glass, &self.bar_tint) else {
+                return GetStockObject(BLACK_BRUSH);
+            };
+            let (memory, bitmap, tint) = (buffer.dc, buffer.bitmap, tint.dc);
+            let local = RECT {
+                right: width,
+                bottom: height,
+                ..Default::default()
+            };
+            let panel = RECT {
+                left,
+                right: left + width,
+                top,
+                bottom: top + height,
+            };
+            SetDCBrushColor(memory, 0x23201a);
+            let brush = GetStockObject(DC_BRUSH);
+            FillRect(memory, &local, brush);
+            self.draw_glass_sample(memory, self.viewport(), panel, local);
+            SetDCBrushColor(tint, 0x23201a);
+            FillRect(
+                tint,
+                &RECT {
+                    right: 1,
+                    bottom: 1,
+                    ..Default::default()
+                },
+                brush,
+            );
+            GdiAlphaBlend(
+                memory,
+                0,
+                0,
+                width,
+                height,
+                tint,
+                0,
+                0,
+                1,
+                1,
+                BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as u8,
+                    BlendFlags: 0,
+                    SourceConstantAlpha: 204,
+                    AlphaFormat: 0,
+                },
+            );
+            let pattern = CreatePatternBrush(bitmap);
+            if pattern.is_null() {
+                return GetStockObject(BLACK_BRUSH);
+            }
+            self.metadata_brush = Some(PatternBrush(pattern));
+            SetBrushOrgEx(dc, 0, 0, ptr::null_mut());
+            pattern
         }
     }
 }
@@ -1657,6 +1931,177 @@ unsafe fn file_dialog(owner: HWND) -> Option<PathBuf> {
         Some(std::ffi::OsString::from_wide(&buffer[..end]).into())
     }
 }
+
+unsafe fn open_menu(hwnd: HWND, location: LPARAM) -> Option<u16> {
+    use windows_sys::core::w;
+    // SAFETY: menu and owner stay on the current UI thread during the modal call.
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return None;
+        }
+        for (id, caption) in [
+            (OPEN, w!("파일 열기…")),
+            (FOLDER, w!("폴더 열기…")),
+            (CONNECT, w!("주소 열기…")),
+        ] {
+            AppendMenuW(menu, MF_STRING, usize::from(id), caption);
+        }
+        let mut point = POINT {
+            x: location as i16 as i32,
+            y: (location >> 16) as i16 as i32,
+        };
+        if location == -1 {
+            let mut rect = RECT::default();
+            GetClientRect(hwnd, &mut rect);
+            point = POINT {
+                x: rect.right / 2,
+                y: rect.bottom / 2,
+            };
+            ClientToScreen(hwnd, &mut point);
+        }
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            0,
+            hwnd,
+            ptr::null(),
+        );
+        DestroyMenu(menu);
+        (command != 0).then_some(command as u16)
+    }
+}
+
+struct AddressDialog {
+    value: Option<String>,
+    smoke: bool,
+}
+
+unsafe fn address_dialog(owner: HWND, smoke: bool) -> Option<String> {
+    use windows_sys::core::w;
+    #[repr(C, align(4))]
+    struct Template {
+        dialog: DLGTEMPLATE,
+        menu: u16,
+        class: u16,
+        title: [u16; 1],
+    }
+    let mut state = AddressDialog { value: None, smoke };
+    let template = Template {
+        dialog: DLGTEMPLATE {
+            style: WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME as u32,
+            dwExtendedStyle: 0,
+            cdit: 0,
+            x: 0,
+            y: 0,
+            cx: 225,
+            cy: 60,
+        },
+        menu: 0,
+        class: 0,
+        title: [0],
+    };
+    const EDIT_ADDRESS: i32 = 501;
+    unsafe extern "system" fn callback(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> isize {
+        // SAFETY: DialogBoxIndirectParamW owns the modal loop and retains the
+        // stack state only until it returns. The edit only borrows local buffers.
+        unsafe {
+            if message == WM_INITDIALOG {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, lparam);
+                SetWindowTextW(hwnd, w!("주소 열기"));
+                let instance = GetModuleHandleW(ptr::null());
+                let mut rect = RECT::default();
+                GetClientRect(hwnd, &mut rect);
+                let width = rect.right;
+                let edit = CreateWindowExW(
+                    WS_EX_CLIENTEDGE,
+                    w!("EDIT"),
+                    w!(""),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+                    10,
+                    12,
+                    width - 20,
+                    26,
+                    hwnd,
+                    EDIT_ADDRESS as usize as _,
+                    instance,
+                    ptr::null(),
+                );
+                if edit.is_null() {
+                    EndDialog(hwnd, 0);
+                    return 1;
+                }
+                SendMessageW(edit, EM_SETLIMITTEXT, 16384, 0);
+                let font = GetStockObject(DEFAULT_GUI_FONT) as usize;
+                SendMessageW(edit, WM_SETFONT, font, 1);
+                for (id, caption, x, style) in [
+                    (IDOK, w!("열기"), width - 158, BS_DEFPUSHBUTTON as u32),
+                    (IDCANCEL, w!("취소"), width - 82, BS_PUSHBUTTON as u32),
+                ] {
+                    let button = CreateWindowExW(
+                        0,
+                        w!("BUTTON"),
+                        caption,
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
+                        x,
+                        47,
+                        72,
+                        26,
+                        hwnd,
+                        id as usize as _,
+                        instance,
+                        ptr::null(),
+                    );
+                    SendMessageW(button, WM_SETFONT, font, 1);
+                }
+                SendMessageW(hwnd, DM_SETDEFID, IDOK as usize, 0);
+                SetFocus(edit);
+                if (*(lparam as *const AddressDialog)).smoke {
+                    SetWindowTextW(edit, w!("smb://server/share/book.cbz"));
+                    PostMessageW(hwnd, WM_COMMAND, IDOK as usize, 0);
+                }
+                return 0;
+            }
+            if message == WM_CLOSE || (message == WM_COMMAND && wparam as u16 as i32 == IDCANCEL) {
+                EndDialog(hwnd, 0);
+                return 1;
+            }
+            if message == WM_COMMAND && wparam as u16 as i32 == IDOK {
+                let edit = GetDlgItem(hwnd, EDIT_ADDRESS);
+                let len = GetWindowTextLengthW(edit).clamp(0, 16384) as usize;
+                let mut text = vec![0; len + 1];
+                let read =
+                    GetWindowTextW(edit, text.as_mut_ptr(), text.len() as i32).max(0) as usize;
+                let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AddressDialog;
+                if !state.is_null() && read != 0 {
+                    (*state).value = Some(String::from_utf16_lossy(&text[..read]));
+                }
+                EndDialog(hwnd, 1);
+                return 1;
+            }
+            0
+        }
+    }
+    // SAFETY: template is DWORD-aligned, contains no child templates, and
+    // both it and the output stay alive during the modal Win32 call.
+    unsafe {
+        DialogBoxIndirectParamW(
+            GetModuleHandleW(ptr::null()),
+            &raw const template.dialog,
+            owner,
+            Some(callback),
+            (&raw mut state) as LPARAM,
+        );
+    }
+    state.value
+}
 unsafe fn folder_dialog(owner: HWND) -> Option<PathBuf> {
     unsafe {
         let title = wide("만화 폴더 열기");
@@ -1682,6 +2127,325 @@ unsafe fn folder_dialog(owner: HWND) -> Option<PathBuf> {
     }
 }
 
+unsafe fn draw_glass_button(item: &windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT) {
+    use windows_sys::Win32::UI::Controls::{ODS_DISABLED, ODS_FOCUS, ODS_SELECTED};
+    // SAFETY: Win32 lends the drawing DC for this WM_DRAWITEM only.
+    unsafe {
+        let dc = item.hDC;
+        let saved = SaveDC(dc);
+        if saved == 0 {
+            return;
+        }
+        let disabled = item.itemState & ODS_DISABLED != 0;
+        let pressed = item.itemState & ODS_SELECTED != 0;
+        let focused = item.itemState & ODS_FOCUS != 0;
+        let mut cursor = POINT::default();
+        let hover = GetCursorPos(&mut cursor) != 0
+            && ScreenToClient(item.hwndItem, &mut cursor) != 0
+            && PtInRect(&item.rcItem, cursor) != 0;
+        SetDCBrushColor(dc, 0x28231c);
+        let brush = GetStockObject(DC_BRUSH);
+        FillRect(dc, &item.rcItem, brush);
+        SelectObject(dc, brush);
+        SelectObject(dc, GetStockObject(DC_PEN));
+        SetDCPenColor(dc, if focused { 0xeee2c8 } else { 0x63574b });
+        SetDCBrushColor(
+            dc,
+            if pressed {
+                0x695b47
+            } else if hover && !disabled {
+                0x514332
+            } else {
+                0x3a3026
+            },
+        );
+        let mut rect = item.rcItem;
+        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 10, 10);
+        let mut label = [0u16; 40];
+        let length =
+            GetWindowTextW(item.hwndItem, label.as_mut_ptr(), label.len() as i32).max(0) as usize;
+        let caption = String::from_utf16_lossy(&label[..length]);
+        let glyph = match item.CtlID as u16 {
+            PREVIOUS => "←",
+            NEXT => "→",
+            FIT => "⊡",
+            ROTATE => "↻",
+            FULLSCREEN => "⛶",
+            FRAME_PREVIOUS => "‹",
+            FRAME_NEXT => "›",
+            PLAY if caption.starts_with("재생") => "▶",
+            PLAY => "Ⅱ",
+            TOP_PIN | BOTTOM_PIN if caption == "고정" => "◇",
+            TOP_PIN | BOTTOM_PIN => "◆",
+            METADATA => "ⓘ",
+            _ => &caption,
+        };
+        SetBkMode(dc, TRANSPARENT as i32);
+        SetTextColor(
+            dc,
+            if disabled {
+                0xaaa098
+            } else if item.CtlID as u16 == METADATA && caption == "메타데이터 닫기" {
+                0xffd096
+            } else {
+                0xfff3ed
+            },
+        );
+        let text = wide(glyph);
+        DrawTextW(
+            dc,
+            text.as_ptr(),
+            text.len() as i32 - 1,
+            &mut rect,
+            DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
+        );
+        RestoreDC(dc, saved);
+    }
+}
+
+unsafe fn attach_tooltips(
+    owner: HWND,
+    instance: windows_sys::Win32::Foundation::HINSTANCE,
+    controls: &[(u16, HWND, i32, i32)],
+) {
+    use windows_sys::{Win32::UI::Controls::*, core::w};
+    // SAFETY: the owned tooltip window and its tools live on the UI thread.
+    // All tool strings below have static storage.
+    unsafe {
+        if InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_WIN95_CLASSES,
+        }) == 0
+        {
+            return;
+        }
+        let tooltip = CreateWindowExW(
+            WS_EX_TOPMOST,
+            TOOLTIPS_CLASSW,
+            ptr::null(),
+            WS_POPUP | TTS_NOPREFIX,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            owner,
+            ptr::null_mut(),
+            instance,
+            ptr::null(),
+        );
+        if tooltip.is_null() {
+            return;
+        }
+        for &(id, control, _, _) in controls {
+            let label = match id {
+                PREVIOUS => w!("이전 페이지"),
+                NEXT => w!("다음 페이지"),
+                SMALLER => w!("축소"),
+                LARGER => w!("확대"),
+                FIT => w!("맞춤"),
+                ROTATE => w!("회전"),
+                FULLSCREEN => w!("전체 화면"),
+                TOP_PIN | BOTTOM_PIN => w!("고정 전환"),
+                METADATA => w!("메타데이터 · Tab"),
+                FRAME_PREVIOUS => w!("이전 프레임"),
+                FRAME_NEXT => w!("다음 프레임"),
+                PLAY => w!("재생 / 일시정지"),
+                SPEED => w!("배속"),
+                _ => continue,
+            };
+            let tool = TTTOOLINFOW {
+                cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
+                uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+                hwnd: owner,
+                uId: control as usize,
+                lpszText: label.cast_mut(),
+                ..Default::default()
+            };
+            SendMessageW(tooltip, TTM_ADDTOOLW, 0, (&raw const tool) as LPARAM);
+        }
+    }
+}
+
+unsafe fn live_resize_smoke(hwnd: HWND, state: &RefCell<App>, check_pixels: bool) {
+    // SAFETY: this is driven only by the smoke timer on the owning UI thread.
+    // Release the App borrow before moving the window so WM_SIZE can paint.
+    unsafe {
+        let control;
+        {
+            let mut app = state.borrow_mut();
+            if !app.bars.pinned(Bar::Bottom) {
+                app.bars.toggle_pin(Bar::Bottom);
+                app.sync_pins();
+            }
+            control = app.control(SMALLER);
+        }
+        let button_probe = || {
+            let mut rect = RECT::default();
+            GetWindowRect(control, &mut rect);
+            let mut probe = POINT {
+                x: rect.left + 6,
+                y: rect.top + 14,
+            };
+            ScreenToClient(hwnd, &mut probe);
+            probe
+        };
+        let probe = button_probe();
+        RedrawWindow(
+            hwnd,
+            ptr::null(),
+            ptr::null_mut(),
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW,
+        );
+        let pixel = |probe: POINT| {
+            GdiFlush();
+            // GetPixel on the screen reads the presented desktop, not GDI's
+            // queued writes. Wait for the compositor only in this smoke test.
+            if windows_sys::Win32::Graphics::Dwm::DwmFlush() < 0 {
+                return None;
+            }
+            let mut point = probe;
+            ClientToScreen(hwnd, &mut point);
+            let hit = WindowFromPoint(point);
+            if hit != hwnd && IsChild(hwnd, hit) == 0 {
+                return None;
+            }
+            let dc = GetDC(ptr::null_mut());
+            let color = GetPixel(dc, point.x, point.y);
+            ReleaseDC(ptr::null_mut(), dc);
+            (color != CLR_INVALID).then_some(color)
+        };
+        let previous = check_pixels.then(|| pixel(probe)).flatten();
+        SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+        let mut sizing = RECT::default();
+        GetWindowRect(hwnd, &mut sizing);
+        sizing.right += 100;
+        sizing.bottom += 100;
+        SendMessageW(
+            hwnd,
+            WM_SIZING,
+            WMSZ_BOTTOMRIGHT as usize,
+            (&raw mut sizing) as LPARAM,
+        );
+        let mut valid = true;
+        for (index, (width, height)) in [(940, 700), (780, 470), (720, 300), (860, 570)]
+            .into_iter()
+            .enumerate()
+        {
+            SetWindowPos(
+                hwnd,
+                ptr::null_mut(),
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER,
+            );
+            let app = state.borrow();
+            let step_valid = app.visible_bars == [false, false]
+                && !app.visible_animation
+                && app
+                    .controls
+                    .iter()
+                    .all(|&(_, control, _, _)| IsWindowVisible(control) == 0);
+            if !step_valid {
+                eprintln!(
+                    "nCatImage: live resize at {width}×{height}: controls {:?}, animated {}",
+                    app.visible_bars, app.visible_animation
+                );
+            }
+            valid &= step_valid;
+            if index == 0
+                && let Some(previous) = previous
+                && let Some(next) = pixel(probe)
+            {
+                if previous == 0x202020 || next != 0x202020 {
+                    eprintln!(
+                        "nCatImage: former button pixel during resize: {previous:#x} -> {next:#x}"
+                    );
+                    valid = false;
+                } else {
+                    println!("live_resize_pixels=ok old_button_cleared=true");
+                }
+            } else if index == 0 && check_pixels {
+                println!("live_resize_pixels=skipped desktop probe not visible");
+            }
+        }
+        SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+        if !state.borrow().visible_bars[Bar::Bottom as usize] {
+            eprintln!("nCatImage: resize did not restore the pinned bottom panel");
+            valid = false;
+        }
+        // Also grow the window without entering the modal sizing loop. Keep
+        // the controls visible and check each vacated location after the
+        // following resize, as well as all of them after the final resize.
+        if check_pixels {
+            let mut former = Vec::new();
+            let mut count = 0;
+            for (width, height) in [(892, 602), (924, 634), (956, 666)] {
+                let point = button_probe();
+                if let Some(color) = pixel(point)
+                    && color != 0x202020
+                {
+                    former.push(point);
+                }
+                SetWindowPos(
+                    hwnd,
+                    ptr::null_mut(),
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER,
+                );
+                let mut msg = MSG::default();
+                while PeekMessageW(
+                    &mut msg,
+                    hwnd,
+                    VIEWPORT_CHANGED,
+                    VIEWPORT_CHANGED,
+                    PM_REMOVE,
+                ) != 0
+                {
+                    DispatchMessageW(&msg);
+                }
+                while PeekMessageW(&mut msg, hwnd, WM_PAINT, WM_PAINT, PM_REMOVE) != 0 {
+                    DispatchMessageW(&msg);
+                }
+                {
+                    let app = state.borrow();
+                    valid &= app.bar_geometry_matches() && app.visible_bars[Bar::Bottom as usize];
+                }
+                for &point in &former {
+                    if let Some(color) = pixel(point) {
+                        count += 1;
+                        if color != 0x202020 {
+                            eprintln!(
+                                "nCatImage: stacked button trail at ({}, {}): {color:#x}",
+                                point.x, point.y
+                            );
+                            valid = false;
+                        }
+                    }
+                }
+            }
+            println!(
+                "visible_resize_pixels={} probes={count}",
+                if count > 0 && valid {
+                    "ok"
+                } else if count == 0 {
+                    "skipped"
+                } else {
+                    "failed"
+                }
+            );
+        }
+        if !valid {
+            eprintln!("nCatImage: live resize left a control visible, stale, or unrestored");
+            state.borrow_mut().close();
+        }
+    }
+}
+
 unsafe extern "system" fn procedure(
     hwnd: HWND,
     message: u32,
@@ -1702,6 +2466,36 @@ unsafe extern "system" fn procedure(
         if message == WM_ERASEBKGND {
             return 1;
         }
+        if message == WM_WINDOWPOSCHANGING {
+            let pos = &mut *(lparam as *mut WINDOWPOS);
+            if pos.flags & SWP_NOSIZE == 0 {
+                pos.flags |= SWP_NOCOPYBITS;
+            }
+        }
+        if message == WM_SIZING {
+            let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App>;
+            let mut hidden = false;
+            if !state.is_null()
+                && let Ok(mut app) = (*state).try_borrow_mut()
+                && !app.live_sizing
+            {
+                // Hide native children at their old locations, before USER32
+                // changes the client surface for the first live resize step.
+                app.live_sizing = true;
+                app.glass_pending = true;
+                app.layout();
+                hidden = true;
+            }
+            if hidden {
+                RedrawWindow(
+                    hwnd,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW,
+                );
+            }
+            return 1;
+        }
         if message == WM_NCCALCSIZE && wparam != 0 {
             // The image and floating bars are anchored differently. No region
             // from the old client surface is valid to copy when its size changes.
@@ -1710,32 +2504,46 @@ unsafe extern "system" fn procedure(
         }
         if message == WM_GETMINMAXINFO {
             let info = &mut *(lparam as *mut MINMAXINFO);
-            info.ptMinTrackSize.x = info.ptMinTrackSize.x.max(BOTTOM_SIZE.0 + 32);
+            info.ptMinTrackSize.x = info
+                .ptMinTrackSize
+                .x
+                .max(ANIMATION_SIZE.0 + BOTTOM_SIZE.0 + 40);
             info.ptMinTrackSize.y = info.ptMinTrackSize.y.max(260);
             return 0;
         }
-        if message == WM_CTLCOLORSTATIC
-            && matches!(GetDlgCtrlID(lparam as HWND) as u16, STATUS | FRAME_INFO)
-        {
-            let dc = wparam as HDC;
-            SetTextColor(dc, 0x00ffffff);
-            SetBkColor(dc, 0x181818);
-            SetDCBrushColor(dc, 0x181818);
-            return GetStockObject(DC_BRUSH) as isize;
+        if message == WM_DRAWITEM {
+            let item = &*(lparam as *const windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT);
+            if item.CtlType == windows_sys::Win32::UI::Controls::ODT_BUTTON {
+                draw_glass_button(item);
+                return 1;
+            }
         }
         if matches!(message, WM_SIZE | WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE) {
             // Interactive sizing can repaint before the posted viewport update.
             // Align controls now when possible, but keep decoding deferred.
             let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App>;
+            let mut repaint_now = false;
             if !state.is_null()
                 && let Ok(mut app) = (*state).try_borrow_mut()
             {
                 if message == WM_ENTERSIZEMOVE {
-                    app.live_sizing = true;
+                    app.in_size_move = true;
                 } else if message == WM_EXITSIZEMOVE {
+                    app.in_size_move = false;
+                    repaint_now = app.live_sizing;
                     app.live_sizing = false;
-                } else if app.live_sizing && !app.controls.is_empty() {
+                    if repaint_now {
+                        app.glass_pending = true;
+                        app.layout();
+                    }
+                } else if app.in_size_move
+                    && !app.controls.is_empty()
+                    && wparam != SIZE_MINIMIZED as usize
+                {
+                    app.live_sizing = true;
+                    app.glass_pending = true;
                     app.layout();
+                    repaint_now = true;
                 }
             }
             if message == WM_ENTERSIZEMOVE {
@@ -1745,14 +2553,37 @@ unsafe extern "system" fn procedure(
             PostMessageW(
                 hwnd,
                 VIEWPORT_CHANGED,
-                usize::from(message == WM_SIZE && wparam == SIZE_MINIMIZED as usize),
+                if message == WM_EXITSIZEMOVE && repaint_now {
+                    VIEWPORT_RESIZE_FINISHED
+                } else if message == WM_SIZE && wparam == SIZE_MINIMIZED as usize {
+                    VIEWPORT_MINIMIZED
+                } else {
+                    0
+                },
                 0,
             );
+            // After dropping the App borrow, present the new viewport and
+            // native controls before USER32 can show an intermediate resize.
+            if repaint_now {
+                RedrawWindow(
+                    hwnd,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW,
+                );
+            }
             return 0;
         }
         let data = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App>;
         if data.is_null() {
             return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        if message == LIVE_RESIZE_TEST {
+            let smoke = (*data).borrow().smoke;
+            if matches!(smoke, Smoke::Resize | Smoke::ResizeFrame) {
+                live_resize_smoke(hwnd, &*data, smoke == Smoke::Resize);
+            }
+            return 0;
         }
         let Ok(mut app) = (*data).try_borrow_mut() else {
             return DefWindowProcW(hwnd, message, wparam, lparam);
@@ -1767,28 +2598,51 @@ unsafe extern "system" fn procedure(
             WM_CTLCOLORSTATIC if lparam as HWND == app.metadata_hwnd => {
                 let dc = wparam as windows_sys::Win32::Graphics::Gdi::HDC;
                 SetTextColor(dc, 0x00ffffff);
-                SetBkColor(dc, 0);
-                GetStockObject(BLACK_BRUSH) as isize
+                SetBkMode(dc, TRANSPARENT as i32);
+                app.metadata_background(dc) as isize
             }
             VIEWPORT_CHANGED => {
                 // A synchronous WM_PAINT during a window transition can consume
                 // the initial invalidation while App is still borrowed.
                 app.invalidate_picture();
-                if wparam != 0 {
+                app.glass_pending = true;
+                SetTimer(hwnd, GLASS_SETTLE, 120, None);
+                if wparam & VIEWPORT_MINIMIZED != 0 {
                     app.bar_layout_size = None;
                 }
                 app.viewport_changed();
+                if wparam & VIEWPORT_RESIZE_FINISHED != 0 {
+                    // The final native resize can invalidate a different set
+                    // of client rectangles than the last WM_SIZING step.
+                    drop(app);
+                    RedrawWindow(
+                        hwnd,
+                        ptr::null(),
+                        ptr::null_mut(),
+                        RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE | RDW_UPDATENOW,
+                    );
+                }
                 0
             }
             WM_COMMAND => {
                 app.command((wparam & 0xffff) as u16, ((wparam >> 16) & 0xffff) as u16);
                 0
             }
+            WM_CONTEXTMENU => {
+                if let Some(id) = open_menu(hwnd, lparam) {
+                    app.command(id, 0);
+                }
+                0
+            }
             // Wake only. A modal loop can dispatch this while App is borrowed;
             // the outer message loop drains the data after the modal call returns.
             RESULT => 0,
             WM_TIMER => {
-                if wparam == RESIZE {
+                if wparam == GLASS_SETTLE {
+                    KillTimer(hwnd, GLASS_SETTLE);
+                    app.glass_pending = false;
+                    app.refresh_glass();
+                } else if wparam == RESIZE {
                     app.resize_finished();
                 } else if wparam == METADATA_TEST {
                     app.metadata_test();
@@ -1844,7 +2698,7 @@ unsafe extern "system" fn procedure(
                     app.pan.0 += point.0 - x;
                     app.pan.1 += point.1 - y;
                     app.drag = Some(point);
-                    app.invalidate_picture();
+                    app.refresh_glass();
                 }
                 0
             }
@@ -1854,7 +2708,7 @@ unsafe extern "system" fn procedure(
                     app.zoom(if delta > 0.0 { 1.1 } else { 1.0 / 1.1 });
                 } else if app.reader.zoom > 1.0 {
                     app.pan.1 += (delta / 2.0) as i32;
-                    app.invalidate_picture();
+                    app.refresh_glass();
                 } else {
                     if app.wheel.signum() != delta.signum() {
                         app.wheel = delta;
@@ -1894,11 +2748,17 @@ unsafe extern "system" fn procedure(
                 if let Some(path) = path {
                     app.open(path);
                 } else {
-                    app.text(STATUS, "파일 또는 폴더를 한 개씩 드롭하세요");
+                    app.set_status("파일 또는 폴더를 한 개씩 드롭하세요");
                 }
                 0
             }
-            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+            _ => {
+                // WM_NCLBUTTONDOWN / WM_SYSCOMMAND may run a nested USER32
+                // move/resize loop until the mouse is released. Do not hold
+                // App across it: WM_SIZING and WM_PAINT must be able to repaint.
+                drop(app);
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
         }
     }
 }
@@ -1932,7 +2792,7 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
         }
         let result = (|| {
             let hwnd = CreateWindowExW(
-                0,
+                WS_EX_COMPOSITED,
                 class_name.as_ptr(),
                 title.as_ptr(),
                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
@@ -1953,45 +2813,35 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                 let mut app = state.borrow_mut();
                 app.hwnd = hwnd;
                 let specs = [
-                    (OPEN, "BUTTON", "파일", 8, 8, 52),
-                    (FOLDER, "BUTTON", "폴더", 64, 8, 52),
-                    (ADDRESS, "EDIT", "", 120, 8, 182),
-                    (CONNECT, "BUTTON", "주소 열기", 306, 8, 80),
-                    (DIRECTION, "BUTTON", "좌→우", 390, 8, 62),
-                    (FULLSCREEN, "BUTTON", "전체 화면", 456, 8, 82),
-                    (TOP_PIN, "BUTTON", "고정 해제", 542, 8, 72),
-                    (PREVIOUS, "BUTTON", "이전", 120, 8, 52),
-                    (PAGE, "EDIT", "1", 176, 8, 50),
-                    (PAGE_GO, "BUTTON", "이동", 230, 8, 48),
-                    (NEXT, "BUTTON", "다음", 282, 8, 52),
-                    (SMALLER, "BUTTON", "−", 338, 8, 32),
-                    (FIT, "BUTTON", "맞춤", 374, 8, 48),
-                    (LARGER, "BUTTON", "+", 426, 8, 32),
-                    (ROTATE, "BUTTON", "회전", 462, 8, 48),
-                    (BOTTOM_PIN, "BUTTON", "고정 해제", 596, 8, 72),
-                    (FRAME_INFO, "STATIC", "애니메이션 없음", 10, 46, 184),
-                    (FRAME_PREVIOUS, "BUTTON", "이전 프레임", 198, 41, 83),
-                    (FRAME_NEXT, "BUTTON", "다음 프레임", 285, 41, 83),
-                    (PLAY, "BUTTON", "일시정지 /", 372, 41, 80),
-                    (SPEED, "COMBOBOX", "", 456, 41, 58),
-                    (FRAME_NUMBER, "EDIT", "1", 518, 41, 59),
-                    (FRAME_GO, "BUTTON", "프레임 이동", 581, 41, 87),
-                    (
-                        STATUS,
-                        "STATIC",
-                        "파일/폴더/ZIP/CBZ를 열거나 드롭하세요",
-                        10,
-                        78,
-                        656,
-                    ),
+                    (PREVIOUS, "BUTTON", "이전 페이지", 8, 8, 36),
+                    (PAGE, "EDIT", "1", 48, 8, 52),
+                    (PAGE_GO, "BUTTON", "이동", 104, 8, 46),
+                    (NEXT, "BUTTON", "다음 페이지", 154, 8, 36),
+                    (DIRECTION, "BUTTON", "좌→우", 194, 8, 60),
+                    (TOP_PIN, "BUTTON", "고정 해제", 258, 8, 40),
+                    (SMALLER, "BUTTON", "−", 8, 8, 36),
+                    (FIT, "BUTTON", "맞춤", 48, 8, 36),
+                    (LARGER, "BUTTON", "+", 88, 8, 36),
+                    (ROTATE, "BUTTON", "회전", 128, 8, 36),
+                    (FULLSCREEN, "BUTTON", "전체 화면", 168, 8, 36),
+                    (BOTTOM_PIN, "BUTTON", "고정 해제", 208, 8, 36),
+                    (FRAME_PREVIOUS, "BUTTON", "이전 프레임", 8, 8, 36),
+                    (PLAY, "BUTTON", "일시정지", 48, 8, 36),
+                    (FRAME_NEXT, "BUTTON", "다음 프레임", 88, 8, 36),
+                    (SPEED, "COMBOBOX", "", 128, 8, 62),
+                    (FRAME_NUMBER, "EDIT", "1", 194, 8, 58),
+                    (FRAME_GO, "BUTTON", "이동", 256, 8, 54),
+                    (METADATA, "BUTTON", "메타데이터 열기", 8, 8, 36),
                 ];
                 for (id, kind, text, x, y, width) in specs {
                     let style = WS_CHILD
-                        | if kind == "STATIC" { 0 } else { WS_TABSTOP }
+                        | WS_TABSTOP
                         | if kind == "EDIT" {
                             WS_BORDER | ES_AUTOHSCROLL as u32
                         } else if kind == "COMBOBOX" {
                             CBS_DROPDOWNLIST as u32 | WS_VSCROLL
+                        } else if kind == "BUTTON" {
+                            BS_OWNERDRAW as u32
                         } else {
                             0
                         };
@@ -2003,13 +2853,7 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                         x,
                         y,
                         width,
-                        if kind == "COMBOBOX" {
-                            280
-                        } else if kind == "STATIC" {
-                            18
-                        } else {
-                            28
-                        },
+                        if kind == "COMBOBOX" { 280 } else { 28 },
                         hwnd,
                         id as usize as _,
                         instance,
@@ -2035,6 +2879,7 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                         wide(&format!("{speed}×")).as_ptr() as isize,
                     );
                 }
+                attach_tooltips(hwnd, instance, &app.controls);
                 app.metadata_hwnd = CreateWindowExW(
                     0,
                     wide("EDIT").as_ptr(),

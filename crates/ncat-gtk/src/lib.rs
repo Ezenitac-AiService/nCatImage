@@ -13,6 +13,7 @@ use ncat_presentation::{
     ReaderView, adjacent,
     reader_bars::{Bar, ReaderBars},
 };
+mod glass;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -28,12 +29,15 @@ fn single_drop_file(files: &[gio::File]) -> Result<&gio::File, DropRejection> {
 }
 
 struct Ui {
+    glass: glass::Glass,
     metadata: RefCell<ncat_presentation::metadata::MetadataOverlay>,
     metadata_label: gtk::Label,
     metadata_panel: gtk::ScrolledWindow,
+    metadata_button: gtk::Button,
     window: gtk::ApplicationWindow,
     header: gtk::Box,
     toolbar: gtk::Box,
+    animation_controls: gtk::Box,
     bars: Cell<ReaderBars>,
     top_pin: gtk::Button,
     bottom_pin: gtk::Button,
@@ -45,7 +49,7 @@ struct Ui {
     network_timer: RefCell<Option<glib::SourceId>>,
     picture: gtk::Picture,
     scroll: gtk::ScrolledWindow,
-    status: gtk::Label,
+    status: RefCell<String>,
     position: gtk::SpinButton,
     previous: gtk::Button,
     next: gtk::Button,
@@ -61,7 +65,6 @@ struct Ui {
     animation_timer: RefCell<Option<glib::SourceId>>,
     animation_view: Cell<View>,
     playback: Cell<Playback>,
-    frame_status: gtk::Label,
     frame_previous: gtk::Button,
     frame_next: gtk::Button,
     frame_target: gtk::SpinButton,
@@ -81,8 +84,14 @@ struct Ui {
 
 impl Ui {
     fn metadata_smoke(&self, has_metadata: bool) {
+        if self.smoke_started.replace(true) {
+            return;
+        }
         assert!(!self.metadata.borrow().enabled);
         assert!(!self.metadata_panel.is_visible());
+        assert!(!self.animation_controls.is_visible());
+        assert!(!self.window.title().unwrap().contains("프레임 "));
+        let original = self.metadata.borrow().text.clone();
         self.position.grab_focus();
         let focus = gtk::prelude::RootExt::focus(&self.window);
         let picture = self.picture.paintable();
@@ -122,16 +131,52 @@ impl Ui {
         self.clear_metadata();
         assert!(!self.metadata_panel.is_visible());
         assert!(self.metadata.borrow().enabled);
-        self.smoke_ok.set(true);
-        println!(
-            "metadata_overlay_smoke=ok default_off=true tab=true focus_unchanged=true plain_text=true has_metadata={has_metadata}"
-        );
-        self.window.close();
+        if has_metadata {
+            self.metadata.borrow_mut().text = original;
+            self.sync_metadata();
+        }
+        self.metadata_button.emit_clicked();
+        assert!(!self.metadata_panel.is_visible());
+        self.metadata_button.emit_clicked();
+        assert_eq!(self.metadata_panel.is_visible(), has_metadata);
+        assert!(self.window.lookup_action("open-address").is_some());
+        let menu = show_open_menu(&self.scroll, &open_menu_model(), 50, 60);
+        assert!(menu.is_visible());
+        menu.popdown();
+        let window = self.window.downgrade();
+        let glass = self.glass.clone();
+        glass.queue_draw();
+        let success = self.smoke_ok.clone();
+        glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            if let Some(window) = window.upgrade() {
+                if glass.smoke_snapshot() {
+                    success.set(true);
+                    println!(
+                        "metadata_overlay_smoke=ok default_off=true tab=true focus_unchanged=true plain_text=true has_metadata={has_metadata} glass=true"
+                    );
+                }
+                window.close();
+            }
+        });
     }
     fn sync_metadata(&self) {
         let state = self.metadata.borrow();
         self.metadata_label.set_text(&state.text);
         self.metadata_panel.set_visible(state.visible());
+        let label = if state.enabled {
+            "메타데이터 닫기"
+        } else {
+            "메타데이터 열기"
+        };
+        self.metadata_button.set_tooltip_text(Some(label));
+        self.metadata_button
+            .update_property(&[gtk::accessible::Property::Label(label)]);
+        if state.enabled {
+            self.metadata_button.add_css_class("info-active");
+        } else {
+            self.metadata_button.remove_css_class("info-active");
+        }
+        self.glass.queue_draw();
     }
     fn toggle_metadata(&self) {
         self.metadata.borrow_mut().toggle();
@@ -177,9 +222,9 @@ impl Ui {
             5 => {
                 assert_eq!(state.index, 0);
                 assert!(!state.paused);
-                assert!(self.frame_status.text().contains("2.00×"));
-                assert!(!self.window.title().unwrap().contains("프레임"));
-                assert_eq!(self.frame_status.parent(), self.frame_previous.parent());
+                assert!(self.window.title().unwrap().contains("프레임 1/2"));
+                assert!(!self.window.title().unwrap().contains("재생"));
+                assert!(self.animation_controls.is_visible());
                 self.play_pause.emit_clicked();
                 assert!(self.frame_jump.is_sensitive());
                 self.frame_target.set_value(2.0);
@@ -194,7 +239,7 @@ impl Ui {
             7 => {
                 assert!(state.paused);
                 assert_eq!(state.index, 0);
-                assert!(self.frame_status.text().contains("1/2"));
+                assert!(self.window.title().unwrap().contains("프레임 1/2"));
                 assert_eq!(self.smoke_sensitivity_changes.get(), 0);
                 self.cancel_reload();
                 self.smoke_ok.set(true);
@@ -223,49 +268,25 @@ impl Ui {
         self.update_playback();
     }
 
-    fn playback_text(&self) -> String {
-        let state = self.playback.get();
-        if !state.active {
-            return String::new();
-        }
-        format!(
-            " · 프레임 {}/{} · {} · {:.2}×",
-            state.index + 1,
-            state.total.map_or("?".into(), |n| n.to_string()),
-            if state.ended {
-                "종료"
-            } else if state.paused {
-                "일시정지"
-            } else {
-                "재생"
-            },
-            state.speed
-        )
-    }
-
     fn update_playback(&self) {
         let state = self.playback.get();
-        let text = self.playback_text();
-        let label = if text.is_empty() {
-            "애니메이션 없음"
-        } else {
-            text.trim_start_matches(" · ")
-        };
-        if self.frame_status.text() != label {
-            self.frame_status.set_text(label);
-        }
+        self.update_title();
+        self.update_interface();
         self.frame_previous
             .set_sensitive(state.frame_controls_enabled());
         self.frame_next
             .set_sensitive(state.frame_controls_enabled());
         self.play_pause.set_sensitive(state.active);
-        let label = if state.paused {
-            "재생 /"
+        let (glyph, label) = if state.paused || state.ended {
+            ("▶", "재생")
         } else {
-            "일시정지 /"
+            ("Ⅱ", "일시정지")
         };
-        if self.play_pause.label().as_deref() != Some(label) {
-            self.play_pause.set_label(label);
+        if self.play_pause.label().as_deref() != Some(glyph) {
+            self.play_pause.set_label(glyph);
+            self.play_pause.set_tooltip_text(Some(label));
+            self.play_pause
+                .update_property(&[gtk::accessible::Property::Label(label)]);
         }
         self.speed.set_sensitive(state.active);
         self.frame_target.set_sensitive(state.can_jump());
@@ -282,8 +303,7 @@ impl Ui {
             return;
         }
         if state.busy {
-            self.status
-                .set_text("프레임을 읽는 중입니다. 표시된 뒤 다시 이동하세요");
+            self.set_status("프레임을 읽는 중");
             return;
         }
         self.frame_target.update();
@@ -409,21 +429,18 @@ impl Ui {
                 }
                 widget.set_visible(visible);
             }
-            let text = if bars.pinned(bar) {
-                "고정 해제"
-            } else {
-                "고정"
-            };
+            let pinned = bars.pinned(bar);
+            let text = if pinned { "◆" } else { "◇" };
             if pin.label().as_deref() != Some(text) {
                 pin.set_label(text);
+                let label = if pinned { "고정 해제" } else { "고정" };
+                pin.set_tooltip_text(Some(label));
+                pin.update_property(&[gtk::accessible::Property::Label(label)]);
             }
         }
-        self.metadata_panel
-            .set_margin_top(if self.header.is_visible() {
-                self.header.height().max(42) + 22
-            } else {
-                12
-            });
+        self.animation_controls
+            .set_visible(bars.visible(Bar::Bottom, editing) && self.playback.get().active);
+        self.glass.queue_draw();
     }
 
     fn point_bars(&self, y: Option<i32>, height: i32) {
@@ -444,7 +461,9 @@ impl Ui {
     fn interface_has_input(&self) -> bool {
         self.interface_input.get()
             && gtk::prelude::GtkWindowExt::focus(&self.window).is_some_and(|focus| {
-                focus.is_ancestor(&self.toolbar) || focus.is_ancestor(&self.header)
+                focus.is_ancestor(&self.toolbar)
+                    || focus.is_ancestor(&self.header)
+                    || focus.is_ancestor(&self.animation_controls)
             })
     }
 
@@ -462,7 +481,7 @@ impl Ui {
     }
 
     fn loading(self: &Rc<Self>) {
-        self.status.set_text("읽는 중 · 이전 페이지 표시 중");
+        self.set_status("읽는 중…");
         if let Some(timer) = self.loading_timer.borrow_mut().take() {
             timer.remove();
         }
@@ -476,7 +495,7 @@ impl Ui {
                     if !ui.closing.get() && ui.backend.generation() == generation {
                         ui.picture.set_paintable(gdk::Paintable::NONE);
                         ui.clear_metadata();
-                        ui.status.set_text("페이지를 읽는 중…");
+                        ui.set_status("페이지를 읽는 중…");
                     }
                 }
             },
@@ -513,7 +532,7 @@ impl Ui {
                     self.backend
                         .diagnose_drop(DropEvent::Rejected(DropRejection::NonLocal));
                 }
-                self.status.set_text(network::message(reason));
+                self.set_status(network::message(reason));
                 return false;
             }
         };
@@ -535,8 +554,7 @@ impl Ui {
         let request = self.network_request.get();
         self.backend
             .diagnose_drop(DropEvent::NetworkResolving { request, protocol });
-        self.status
-            .set_text("네트워크 폴더 연결 중… 인증이 필요하면 파일 관리자에서 먼저 로그인하세요");
+        self.set_status("네트워크 연결 중…");
         let parent = self.window.clone();
         let resolve = self.resolve_network;
         let weak = Rc::downgrade(self);
@@ -562,7 +580,7 @@ impl Ui {
                     Err(reason) => {
                         ui.backend
                             .diagnose_drop(DropEvent::NetworkFailed { request, reason });
-                        ui.status.set_text(network::message(reason));
+                        ui.set_status(network::message(reason));
                     }
                 }
             }));
@@ -579,8 +597,7 @@ impl Ui {
                         request,
                         reason: NetworkFailure::Timeout,
                     });
-                    ui.status
-                        .set_text(network::message(NetworkFailure::Timeout));
+                    ui.set_status(network::message(NetworkFailure::Timeout));
                 }
             },
         ));
@@ -613,7 +630,7 @@ impl Ui {
                 self.loading();
             }
             Err(code) => {
-                self.status.set_text(&code.to_string());
+                self.set_status(&code.to_string());
                 if from_drop {
                     self.backend.diagnose_drop(DropEvent::OpenFailed {
                         generation: self.backend.generation(),
@@ -676,7 +693,7 @@ impl Ui {
             self.layout_picture();
             self.load(index);
         } else {
-            self.status.set_text(if forward {
+            self.set_status(if forward {
                 "마지막 페이지입니다"
             } else {
                 "첫 페이지입니다"
@@ -699,24 +716,38 @@ impl Ui {
         self.position.set_sensitive(len > 0);
         self.position.set_range(1.0, len.max(1) as f64);
         self.position.set_value((self.selected.get() + 1) as f64);
-        if let Some(book) = book.as_ref() {
+        drop(book);
+        self.update_title();
+        self.syncing.set(false);
+    }
+
+    fn set_status(&self, text: &str) {
+        self.status.replace(text.into());
+        self.update_title();
+    }
+
+    fn update_title(&self) {
+        let book = self.book.borrow();
+        let page = book.as_ref().map(|book| {
             let name = book
                 .pages
                 .get(self.selected.get())
                 .map_or("", |p| p.name.as_str());
-            let count = if book.complete {
-                book.pages.len().to_string()
-            } else {
-                "분석 중".into()
-            };
-            self.window.set_title(Some(&format!(
-                "{} / {} · {} — nCatImage",
+            (
                 self.selected.get() + 1,
-                count,
-                name
-            )));
+                book.complete.then_some(book.pages.len()),
+                name,
+            )
+        });
+        let title = ncat_presentation::reader_title(
+            "nCatImage",
+            page,
+            self.playback.get(),
+            &self.status.borrow(),
+        );
+        if self.window.title().as_deref() != Some(title.as_str()) {
+            self.window.set_title(Some(&title));
         }
-        self.syncing.set(false);
     }
 
     fn layout_picture(&self) {
@@ -876,7 +907,7 @@ impl Ui {
                 *self.book.borrow_mut() = Some(book);
                 self.update_navigation();
             }
-            Event::Frame { frame, cached, .. } => {
+            Event::Frame { frame, .. } => {
                 if let Some(timer) = self.loading_timer.borrow_mut().take() {
                     timer.remove();
                 }
@@ -918,13 +949,9 @@ impl Ui {
                 } else {
                     self.reset_playback(true);
                 }
-                self.status.set_text(&format!(
-                    "{} · {}×{} · {} · {:.1} MiB 예약 · M1 축소 표시 / ICC 보정 미구현",
-                    info.format,
-                    info.original_width,
-                    info.original_height,
-                    if cached { "캐시 적중" } else { "디코딩" },
-                    self.backend.budget_used() as f64 / 1_048_576.0
+                self.set_status(&format!(
+                    "{} · {}×{}",
+                    info.format, info.original_width, info.original_height
                 ));
                 if self.smoke {
                     if self.smoke_metadata {
@@ -987,7 +1014,7 @@ impl Ui {
                 }
                 self.picture.set_paintable(gdk::Paintable::NONE);
                 self.clear_metadata();
-                self.status.set_text(&code.to_string());
+                self.set_status(&code.to_string());
                 if self.smoke {
                     self.smoke_ok.set(false);
                     eprintln!("nCatImage: smoke failure: {code:?}");
@@ -1076,6 +1103,41 @@ enum SmokeMode {
     Metadata,
 }
 
+fn icon_button(glyph: &str, label: &str) -> gtk::Button {
+    let button = gtk::Button::with_label(glyph);
+    button.set_tooltip_text(Some(label));
+    button.update_property(&[gtk::accessible::Property::Label(label)]);
+    button
+}
+
+const OPEN_MENU_ITEMS: [(&str, &str); 3] = [
+    ("open-file", "파일 열기…"),
+    ("open-folder", "폴더 열기…"),
+    ("open-address", "주소 열기…"),
+];
+
+fn open_menu_model() -> gio::Menu {
+    let menu = gio::Menu::new();
+    for (id, label) in OPEN_MENU_ITEMS {
+        menu.append(Some(label), Some(&format!("win.{id}")));
+    }
+    menu
+}
+
+fn show_open_menu(
+    anchor: &gtk::ScrolledWindow,
+    menu: &gio::Menu,
+    x: i32,
+    y: i32,
+) -> gtk::PopoverMenu {
+    let popover = gtk::PopoverMenu::from_model(Some(menu));
+    popover.set_parent(anchor);
+    popover.set_pointing_to(Some(&gdk::Rectangle::new(x, y, 1, 1)));
+    popover.connect_closed(|popover| popover.unparent());
+    popover.popup();
+    popover
+}
+
 fn build(
     app: &gtk::Application,
     initial: Option<PathBuf>,
@@ -1103,25 +1165,10 @@ fn build(
         .default_height(800)
         .build();
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let open = gtk::Button::with_label("파일 열기");
-    let folder = gtk::Button::with_label("폴더");
-    let network = gtk::Button::with_label("네트워크");
-    network.set_tooltip_text(Some("SMB / FTP / SFTP 주소 열기 · Ctrl+L"));
-    header.append(&open);
-    header.append(&folder);
-    header.append(&network);
     let direction = gtk::ToggleButton::with_label("우→좌");
     direction.set_tooltip_text(Some("좌우 방향키의 읽기 방향 · D"));
-    header.append(&direction);
-    let fullscreen = gtk::Button::with_label("전체 화면");
-    header.append(&fullscreen);
-    let top_pin = gtk::Button::with_label("고정 해제");
-    header.append(&top_pin);
-    let frame_status = gtk::Label::new(Some("애니메이션 없음"));
-    frame_status.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    frame_status.set_width_chars(24);
-    frame_status.set_max_width_chars(24);
-    frame_status.set_xalign(0.0);
+    let fullscreen = icon_button("⛶", "전체 화면");
+    let top_pin = icon_button("◆", "고정 해제");
 
     let picture = gtk::Picture::builder()
         .hexpand(true)
@@ -1136,70 +1183,58 @@ fn build(
         .child(&picture)
         .build();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
-    let toolbar = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    toolbar.set_margin_top(6);
-    toolbar.set_margin_bottom(8);
-    let status = gtk::Label::new(Some(
-        "파일/폴더/ZIP을 열거나 드롭하세요 · ↑ ↓ / Space · ` UI 토글 · Esc 종료",
-    ));
-    status.set_wrap(true);
-    status.set_margin_start(12);
-    status.set_margin_end(12);
-    toolbar.append(&status);
-    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    controls.set_halign(gtk::Align::Center);
-    let previous = gtk::Button::with_label("이전");
-    let next = gtk::Button::with_label("다음");
+    let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let previous = icon_button("←", "이전 페이지");
+    let next = icon_button("→", "다음 페이지");
     let position = gtk::SpinButton::with_range(1.0, 1.0, 1.0);
     position.set_numeric(true);
     position.set_width_chars(6);
-    let smaller = gtk::Button::with_label("−");
-    let fit = gtk::Button::with_label("맞춤");
-    let larger = gtk::Button::with_label("+");
-    let rotate = gtk::Button::with_label("회전");
-    let bottom_pin = gtk::Button::with_label("고정 해제");
+    let smaller = icon_button("−", "축소");
+    let fit = icon_button("⊡", "맞춤");
+    let larger = icon_button("+", "확대");
+    let rotate = icon_button("↻", "회전");
+    let bottom_pin = icon_button("◆", "고정 해제");
     for widget in [
         previous.upcast_ref::<gtk::Widget>(),
         position.upcast_ref(),
         next.upcast_ref(),
-        smaller.upcast_ref(),
+        direction.upcast_ref(),
+        top_pin.upcast_ref(),
+    ] {
+        header.append(widget);
+    }
+    for widget in [
+        smaller.upcast_ref::<gtk::Widget>(),
         fit.upcast_ref(),
         larger.upcast_ref(),
         rotate.upcast_ref(),
+        fullscreen.upcast_ref(),
         bottom_pin.upcast_ref(),
     ] {
-        controls.append(widget);
+        toolbar.append(widget);
     }
-    toolbar.append(&controls);
     let animation_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    animation_controls.set_halign(gtk::Align::Center);
-    let frame_previous = gtk::Button::with_label("이전 프레임 ,");
-    let frame_next = gtk::Button::with_label("다음 프레임 .");
-    let play_pause = gtk::Button::with_label("일시정지 /");
+    let frame_previous = icon_button("‹", "이전 프레임");
+    let frame_next = icon_button("›", "다음 프레임");
+    let play_pause = icon_button("Ⅱ", "일시정지");
     let frame_target =
         gtk::SpinButton::with_range(1.0, f64::from(ncat_protocol::MAX_ANIMATION_FRAMES), 1.0);
     frame_target.set_numeric(true);
     frame_target.set_width_chars(5);
-    frame_target.set_tooltip_text(Some("일시정지 상태에서 이동할 프레임 번호 (1부터 시작)"));
+    frame_target.set_tooltip_text(Some("프레임 번호"));
     let frame_jump = gtk::Button::with_label("이동");
-    frame_jump.set_tooltip_text(Some("지정한 프레임으로 이동 · Enter"));
-    frame_previous.set_tooltip_text(Some("일시정지 후 이전 프레임 · ,"));
-    frame_next.set_tooltip_text(Some("일시정지 후 다음 프레임 · ."));
-    play_pause.set_tooltip_text(Some("재생 / 일시정지 · /"));
+    frame_jump.set_tooltip_text(Some("프레임 이동"));
     let speed = gtk::DropDown::from_strings(&[
         "0.25×", "0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×", "3×", "4×",
     ]);
     speed.set_selected(3);
-    speed.set_tooltip_text(Some("애니메이션 재생 속도 (0.25×~4×)"));
-    animation_controls.append(&frame_status);
+    speed.set_tooltip_text(Some("배속"));
     animation_controls.append(&frame_previous);
     animation_controls.append(&frame_next);
     animation_controls.append(&play_pause);
-    animation_controls.append(&gtk::Label::new(Some("속도")));
     animation_controls.append(&speed);
     animation_controls.append(&frame_target);
     animation_controls.append(&frame_jump);
-    toolbar.append(&animation_controls);
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&scroll));
     let metadata_label = gtk::Label::new(None);
@@ -1214,10 +1249,10 @@ fn build(
     metadata_label.set_margin_end(12);
     let metadata_panel = gtk::ScrolledWindow::builder()
         .child(&metadata_label)
-        .halign(gtk::Align::Start)
+        .halign(gtk::Align::End)
         .valign(gtk::Align::Start)
-        .margin_start(12)
-        .margin_top(12)
+        .margin_end(12)
+        .margin_top(62)
         .width_request(400)
         .max_content_height(300)
         .propagate_natural_height(true)
@@ -1226,19 +1261,50 @@ fn build(
         .build();
     metadata_panel.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     metadata_panel.add_css_class("metadata-overlay");
+    let metadata_button = icon_button("ⓘ", "메타데이터 열기");
+    metadata_button.set_focus_on_click(false);
+    let info = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    info.append(&metadata_button);
+    info.set_margin_top(8);
     let css = gtk::CssProvider::new();
     css.load_from_data(
-        ".metadata-overlay, .reader-bar { background: rgba(20,20,20,0.86); color: white; border-radius: 10px; } .reader-bar { padding: 8px; }",
+        ".metadata-overlay, .reader-bar { background: transparent; color: #edf3ff; border-radius: 12px; }
+         .reader-bar { padding: 8px; }
+         .reader-bar button, .reader-bar dropdown button { background: rgba(173,197,233,0.12); color: #edf3ff; border: 1px solid rgba(190,210,244,0.18); border-radius: 8px; box-shadow: none; }
+         .reader-bar button:hover { background: rgba(173,197,233,0.26); }
+         .reader-bar button:active { background: rgba(173,197,233,0.36); }
+         .reader-bar button.info-active { background: rgba(115,175,248,0.35); border-color: rgba(173,208,255,0.65); }
+         .reader-bar button:disabled { color: #9aa5bb; }
+         .metadata-overlay viewport { background: transparent; }",
     );
     gtk::style_context_add_provider_for_display(
         &gtk::prelude::WidgetExt::display(&window),
         &css,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    let glass = glass::Glass::new(
+        &scroll,
+        &[
+            header.upcast_ref(),
+            toolbar.upcast_ref(),
+            animation_controls.upcast_ref(),
+            info.upcast_ref(),
+            metadata_panel.upcast_ref(),
+        ],
+    );
+    overlay.add_overlay(&glass);
     overlay.add_overlay(&metadata_panel);
-    for (bar, align) in [(&header, gtk::Align::Start), (&toolbar, gtk::Align::End)] {
-        bar.set_halign(gtk::Align::Center);
-        bar.set_valign(align);
+    for (bar, horizontal, vertical) in [
+        (&header, gtk::Align::Center, gtk::Align::Start),
+        (&toolbar, gtk::Align::End, gtk::Align::End),
+        (&animation_controls, gtk::Align::Start, gtk::Align::End),
+        (&info, gtk::Align::End, gtk::Align::Start),
+    ] {
+        bar.set_halign(horizontal);
+        bar.set_valign(vertical);
+        bar.set_margin_start(8);
+        bar.set_margin_end(8);
+        bar.set_margin_bottom(8);
         bar.add_css_class("reader-bar");
         overlay.add_overlay(bar);
     }
@@ -1246,12 +1312,15 @@ fn build(
     window.set_size_request(760, 240);
     window.set_child(Some(&overlay));
     let ui = Rc::new(Ui {
+        glass,
         metadata: RefCell::new(ncat_presentation::metadata::MetadataOverlay::default()),
         metadata_label,
         metadata_panel,
+        metadata_button,
         window,
         header,
         toolbar,
+        animation_controls,
         bars: Cell::new(ReaderBars::default()),
         top_pin,
         bottom_pin,
@@ -1263,7 +1332,7 @@ fn build(
         network_timer: RefCell::new(None),
         picture,
         scroll,
-        status,
+        status: RefCell::new("우클릭: 열기".into()),
         position,
         previous,
         next,
@@ -1279,7 +1348,6 @@ fn build(
         animation_timer: RefCell::new(None),
         animation_view: Cell::new(View::default()),
         playback: Cell::new(Playback::default()),
-        frame_status,
         frame_previous,
         frame_next,
         frame_target,
@@ -1298,6 +1366,14 @@ fn build(
     });
     ui.update_navigation();
     ui.update_playback();
+    {
+        let weak = Rc::downgrade(&ui);
+        ui.metadata_button.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.toggle_metadata();
+            }
+        });
+    }
     ui.update_interface();
     for (bar, button) in [(Bar::Top, &ui.top_pin), (Bar::Bottom, &ui.bottom_pin)] {
         let weak = Rc::downgrade(&ui);
@@ -1403,19 +1479,58 @@ fn build(
             }
         });
     }
-    {
+    let menu = open_menu_model();
+    for (id, _) in OPEN_MENU_ITEMS {
+        let action = gio::SimpleAction::new(id, None);
         let weak = Rc::downgrade(&ui);
-        network.connect_clicked(move |_| {
+        action.connect_activate(move |_, _| {
             if let Some(ui) = weak.upgrade() {
-                ui.network_dialog();
+                match id {
+                    "open-file" => ui.dialog(false),
+                    "open-folder" => ui.dialog(true),
+                    _ => ui.network_dialog(),
+                }
             }
         });
+        ui.window.add_action(&action);
     }
+    let click = gtk::GestureClick::new();
+    click.set_button(gdk::BUTTON_SECONDARY);
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(&ui);
+    let context_model = menu.clone();
+    click.connect_pressed(move |gesture, _, x, y| {
+        if let Some(ui) = weak.upgrade() {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            show_open_menu(&ui.scroll, &context_model, x as i32, y as i32);
+        }
+    });
+    overlay.add_controller(click);
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(&ui);
+    keys.connect_key_pressed(move |_, key, _, modifiers| {
+        if (key == gdk::Key::Menu
+            || (key == gdk::Key::F10 && modifiers.contains(gdk::ModifierType::SHIFT_MASK)))
+            && let Some(ui) = weak.upgrade()
+        {
+            show_open_menu(
+                &ui.scroll,
+                &menu,
+                ui.scroll.width() / 2,
+                ui.scroll.height() / 2,
+            );
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    overlay.add_controller(keys);
     // Only an explicit pointer click opts controls into keyboard input. Merely
     // showing/restoring a window or pressing Tab must not focus the page spin.
     for widget in [
         ui.header.upcast_ref::<gtk::Widget>(),
         ui.toolbar.upcast_ref(),
+        ui.animation_controls.upcast_ref(),
     ] {
         let click = gtk::GestureClick::new();
         click.set_button(0);
@@ -1445,22 +1560,6 @@ fn build(
         ui.window.connect_fullscreened_notify(move |_| {
             if let Some(ui) = weak.upgrade() {
                 ui.update_interface();
-            }
-        });
-    }
-    {
-        let weak = Rc::downgrade(&ui);
-        open.connect_clicked(move |_| {
-            if let Some(ui) = weak.upgrade() {
-                ui.dialog(false);
-            }
-        });
-    }
-    {
-        let weak = Rc::downgrade(&ui);
-        folder.connect_clicked(move |_| {
-            if let Some(ui) = weak.upgrade() {
-                ui.dialog(true);
             }
         });
     }
@@ -1728,7 +1827,7 @@ fn build(
             } else {
                 ui.backend
                     .diagnose_drop(DropEvent::Rejected(DropRejection::UnsupportedValue));
-                ui.status.set_text("지원하지 않는 드롭 형식입니다");
+                ui.set_status("지원하지 않는 드롭 형식입니다");
                 return false;
             };
             ui.backend.diagnose_drop(DropEvent::Received {
@@ -1739,7 +1838,7 @@ fn build(
                 Ok(file) => ui.open_file(file.clone(), true),
                 Err(reason) => {
                     ui.backend.diagnose_drop(DropEvent::Rejected(reason));
-                    ui.status.set_text(match reason {
+                    ui.set_status(match reason {
                         DropRejection::Empty => "드롭된 파일이 없습니다",
                         DropRejection::MultipleItems => "파일 또는 폴더를 한 개씩 드롭하세요",
                         DropRejection::NonLocal => "로컬 또는 SMB·FTP·SFTP 위치만 열 수 있습니다",

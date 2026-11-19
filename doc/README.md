@@ -26,6 +26,8 @@ OpenCode 코딩 에이전트를 통한 AI 기반 개발이다. 사용자용 안�
 | [10 배포 파이프라인](10-distribution.md) | AppImage·Windows 단일 EXE 전환·macOS DMG, readiness gate·서명/릴리스 정책 |
 | [11 Windows 단일 EXE·Wine](11-windows-single-exe-wine.md) | native GUI·동일 EXE worker·Windows 안전성·Wine 단계별 개발 계획 |
 | [12 메타데이터 레이어](12-metadata-overlay.md) | Tab 토글·floating layer·추출 형식/상한·wire v5·검증 |
+| [13 서리 유리 UI](13-frosted-reader-ui.md) | 플로팅 바와 메타데이터 배경 흐림, 간결한 컨트롤, GTK4·Win32 구현 |
+| [14 읽기 조작 배치](14-reader-control-layout.md) | 페이지·프레임·확대 조작 분리, 우클릭 열기, 제목 표시줄 |
 | [작업 내역](../CHANGELOG.md) | 0.4.0~0.4.3 반영 사항·릴리스 경계 |
 | [검증 도구](../tools/README.md) | 합성 입력·worker·GUI·네트워크 재현 절차 |
 | [개발 지침](../AGENT.md) | 에이전트 필수 원칙 |
