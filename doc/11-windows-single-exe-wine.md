@@ -1,5 +1,19 @@
 # 11. 단일 Windows EXE·Wine 개발 계획
 
+## v0.5.5 플로팅 바 크기 변경
+
+Windows가 창의 이전 픽셀을 새 크기로 보존하는 동안, 각 버튼이 개별 이동하면 배경과 컨트롤의 좌표가 서로 어긋날 수 있었다. 크기가 바뀔 때 이전 표면을 복사하지 않고, 컨트롤의 위치·표시 상태를 일괄 적용한 다음 창과 자식 컨트롤을 갱신한다. 창 크기 변경 알림으로 컨트롤 배치를 즉시 맞추고 새 이미지 디코딩은 계속 지연 처리한다. 회귀 검사는 연속 크기 변경, 최대화·복원 등에서 네이티브 컨트롤의 좌표와 표시 상태를 확인한다.
+
+## Win32 페이지 로딩 상태가 멈추는 문제
+
+파일·폴더 선택창 등의 중첩 메시지 루프가 `App`을 이미 빌린 상태에서 디코딩 완료 메시지를 꺼내면, 이전에는 메시지만 사라지고 결과가 대기열에 남았다. `RESULT`는 이제 깨우는 용도로만 사용한다. 외부 메시지 루프는 다시 대기하기 전에 결과 대기열 자체를 읽으므로 중첩 루프에서 알림을 소비해도 최신 결과를 반영한다. `--smoke-modal-load <CBZ>`는 페이지를 요청한 뒤 중첩 메시지 처리를 재현해 이 경로를 검사한다.
+
+## Win32 크기 변경·확대/축소 깜빡임
+
+- 이미지와 여백은 재사용하는 GDI 메모리 비트맵에 그린 뒤 변경 영역을 한 번에 표시한다. 버퍼는 최대 32 MiB이며, 사용할 수 없으면 이미지 영역을 지우지 않고 직접 그린다.
+- 창 크기가 바뀔 때 고정 컨트롤을 다시 배치하지 않는다. 크기 변경·확대/축소 중에는 기존 프레임을 표시하며, 입력이 100ms 동안 멈춘 뒤 필요한 경우에만 디코딩을 다시 요청한다.
+- `--smoke-resize-frame <PNG>`는 실제 이미지가 표시된 상태에서 resize/maximize/restore/fullscreen/UI toggle/minimize/restore와 연속 확대·맞춤을 검사한다. 버퍼 표시와 디코딩 지연을 확인하며 육안 검사나 DPI 인증을 대신하지 않는다.
+
 ## v0.5.3 수정: Windows resize/paint
 
 `WM_SIZE`의 layout/invalidating만으로는 새 디코딩 크기를 반영하지 못했고, `WM_EXITSIZEMOVE`의 reload는 최대화/복원·전체 화면을 처리하지 못했다. 특히 `SetWindowPos`가 `App` mutable borrow 중 동기 재진입하면 기존 callback이 default 처리로 빠져 갱신을 놓쳤다.
@@ -63,6 +77,8 @@ Win32 FFI는 Windows crate의 좁은 module에서만 허용하며 handle·pointe
 ## 5. 빌드와 보고
 
 GNU cross toolchain 또는 llvm-mingw와 Rust Windows target을 프로젝트 외 도구 경로에 설치한다. 호스트 시스템 패키지·기본 Wine prefix는 임의로 변경하지 않는다. target별 CRT static/PE import 검증을 적용하며 필요 없는 GTK graph를 Windows binary에 링크하지 않는다.
+
+Windows 호스트에서는 WSL에서 위 도구를 사용한다. WSL에서 저장소가 `/mnt/d` 등 Windows 드라이브 아래에 있으면 `CARGO_TARGET_DIR="$HOME/.cache/ncatimage/windows-target"`을 빌드 명령에 지정해 중간 파일을 WSL 파일시스템에 둔다. `build-single.py`는 검증한 EXE를 저장소의 `target/windows-single/nCatImage.exe`에 복사한다.
 
 각 작업 보고에는 구현 단계·실행한 명령·Wine 버전/target·검사 결과·미검증 사항을 구분한다. 새 버전·커밋·푸시·공개 Release는 별도 사용자 요청 전 수행하지 않는다.
 

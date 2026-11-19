@@ -4,11 +4,11 @@ use ncat_backend::{Backend, BackendOptions, Book, Event, Frame, View, WorkerComm
 use ncat_presentation::{
     ReaderView, adjacent,
     input::{self, Command, Key, Modifiers},
-    interface_shown,
     playback::{Playback, SPEEDS},
+    reader_bars::{Bar, ReaderBars},
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     io,
     path::PathBuf,
     ptr,
@@ -20,10 +20,17 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{
+        ERROR_NOT_ENOUGH_QUOTA, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    },
     Graphics::Gdi::*,
     System::{Com::*, LibraryLoader::GetModuleHandleW},
-    UI::{Controls::Dialogs::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
+    UI::{
+        Controls::{Dialogs::*, WM_MOUSELEAVE},
+        Input::KeyboardAndMouse::*,
+        Shell::*,
+        WindowsAndMessaging::*,
+    },
 };
 
 const RESULT: u32 = WM_APP + 1;
@@ -34,6 +41,9 @@ const DEADLINE: usize = 3;
 const RESIZE: usize = 4;
 const RESIZE_TEST: usize = 5;
 const METADATA_TEST: usize = 6;
+const VIEW_SETTLE_MS: u32 = 100;
+const TOP_SIZE: (i32, i32) = (622, 44);
+const BOTTOM_SIZE: (i32, i32) = (676, 104);
 const OPEN: u16 = 101;
 const FOLDER: u16 = 102;
 const ADDRESS: u16 = 103;
@@ -56,16 +66,28 @@ const FRAME_NUMBER: u16 = 119;
 const FRAME_GO: u16 = 120;
 const FRAME_INFO: u16 = 121;
 const STATUS: u16 = 122;
+const TOP_PIN: u16 = 123;
+const BOTTOM_PIN: u16 = 124;
+
+fn control_bar(id: u16) -> Bar {
+    match id {
+        OPEN | FOLDER | ADDRESS | CONNECT | DIRECTION | FULLSCREEN | TOP_PIN => Bar::Top,
+        _ => Bar::Bottom,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Smoke {
     None,
     Window,
     Resize,
+    ResizeFrame,
     MetadataWindow,
+    MetadataFrame,
     Frame,
     Animation,
     Navigation,
+    ModalLoad,
 }
 
 struct Prepared {
@@ -75,6 +97,90 @@ struct Prepared {
 struct Display {
     frame: Arc<Frame>,
     bgra: Vec<u8>,
+}
+
+// One UI-thread-owned surface. Round up to reuse it across nearby sizes;
+// cap the extra 32-bpp storage at 32 MiB, with a no-buffer fallback.
+struct PaintBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    width: i32,
+    height: i32,
+}
+impl PaintBuffer {
+    unsafe fn ensure(slot: &mut Option<Self>, dc: HDC, width: i32, height: i32) {
+        if slot
+            .as_ref()
+            .is_some_and(|b| b.width >= width && b.height >= height)
+        {
+            return;
+        }
+        *slot = None;
+        let round = |n: i32| ((n as i64 + 127) / 128) * 128;
+        let (width, height) = (round(width), round(height));
+        if width * height > 32 * 1024 * 1024 / 4 {
+            return;
+        }
+        let (width, height) = (width as i32, height as i32);
+        // SAFETY: the bitmap and memory DC are paired on the UI thread; the
+        // DIB bits are never accessed outside GDI and the bitmap is deselected on drop.
+        unsafe {
+            let memory = CreateCompatibleDC(dc);
+            if memory.is_null() {
+                return;
+            }
+            let mut bits = ptr::null_mut();
+            let bitmap = CreateDIBSection(
+                dc,
+                &bitmap_info(width, height),
+                DIB_RGB_COLORS,
+                &mut bits,
+                ptr::null_mut(),
+                0,
+            );
+            if !bitmap.is_null() {
+                let previous = SelectObject(memory, bitmap);
+                if !previous.is_null() {
+                    *slot = Some(Self {
+                        dc: memory,
+                        bitmap,
+                        previous,
+                        width,
+                        height,
+                    });
+                    return;
+                }
+                DeleteObject(bitmap);
+            }
+            DeleteDC(memory);
+        }
+    }
+}
+impl Drop for PaintBuffer {
+    fn drop(&mut self) {
+        // SAFETY: both handles belong to this buffer; restore the stock bitmap first.
+        unsafe {
+            SelectObject(self.dc, self.previous);
+            DeleteObject(self.bitmap);
+            DeleteDC(self.dc);
+        }
+    }
+}
+
+fn bitmap_info(width: i32, height: i32) -> BITMAPINFO {
+    BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 struct Window(HWND);
@@ -91,8 +197,16 @@ impl Drop for Window {
 struct App {
     metadata: ncat_presentation::metadata::MetadataOverlay,
     metadata_hwnd: HWND,
+    metadata_bounds: Cell<Option<(i32, i32, i32)>>,
     hwnd: HWND,
-    controls: Vec<(u16, HWND, i32, i32, i32)>,
+    controls: Vec<(u16, HWND, i32, i32)>,
+    paint_buffer: Option<PaintBuffer>,
+    bar_tint: Option<PaintBuffer>,
+    bars: ReaderBars,
+    visible_bars: [bool; 2],
+    bar_layout_size: Option<(i32, i32)>,
+    live_sizing: bool,
+    tracking_mouse: HWND,
     backend: Backend,
     events: mpsc::Receiver<Prepared>,
     stop: Arc<AtomicBool>,
@@ -103,7 +217,6 @@ struct App {
     playback: Playback,
     animation_view: View,
     rtl: bool,
-    interface: bool,
     controls_input: bool,
     fullscreen: Option<(isize, RECT)>,
     closing: Option<Instant>,
@@ -114,15 +227,28 @@ struct App {
     smoke: Smoke,
     smoke_frames: u32,
     navigation_left: u32,
+    modal_load_generation: Option<u64>,
     success: bool,
     resized_view: Option<View>,
+    view_deadline: Option<Instant>,
     resize_test_phase: u8,
     resize_test_expected: Option<(View, u32)>,
     paint_count: u32,
+    buffered_picture: Option<(i32, i32)>,
 }
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
+}
+
+unsafe fn set_child_visible(hwnd: HWND, show: bool) {
+    // SAFETY: caller owns the child on this thread. Check its own style, not
+    // ancestor visibility (the parent can still be hidden during creation).
+    unsafe {
+        if (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE as isize != 0) != show {
+            ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
+        }
+    }
 }
 
 fn stage(event: Event) -> Prepared {
@@ -162,8 +288,16 @@ impl App {
             Self {
                 metadata: ncat_presentation::metadata::MetadataOverlay::default(),
                 metadata_hwnd: ptr::null_mut(),
+                metadata_bounds: Cell::new(None),
                 hwnd: ptr::null_mut(),
                 controls: Vec::new(),
+                paint_buffer: None,
+                bar_tint: None,
+                bars: ReaderBars::default(),
+                visible_bars: [false; 2],
+                bar_layout_size: None,
+                live_sizing: false,
+                tracking_mouse: ptr::null_mut(),
                 backend,
                 events,
                 stop: Arc::new(AtomicBool::new(false)),
@@ -174,7 +308,6 @@ impl App {
                 playback: Playback::default(),
                 animation_view: View::default(),
                 rtl: false,
-                interface: true,
                 controls_input: false,
                 fullscreen: None,
                 closing: None,
@@ -185,11 +318,14 @@ impl App {
                 smoke,
                 smoke_frames: 0,
                 navigation_left: if smoke == Smoke::Navigation { 500 } else { 0 },
+                modal_load_generation: None,
                 success: false,
                 resized_view: None,
+                view_deadline: None,
                 resize_test_phase: 0,
                 resize_test_expected: None,
                 paint_count: 0,
+                buffered_picture: None,
             },
             sender,
         ))
@@ -220,9 +356,6 @@ impl App {
         unsafe {
             let mut rect: RECT = std::mem::zeroed();
             GetClientRect(self.hwnd, &mut rect);
-            if interface_shown(self.interface, self.fullscreen.is_some()) {
-                rect.top = 104;
-            }
             rect
         }
     }
@@ -241,22 +374,148 @@ impl App {
             }
         }
     }
-    unsafe fn layout(&self) {
+    fn bar_rect(bar: Bar, viewport: RECT) -> RECT {
+        let ((width, height), top) = match bar {
+            Bar::Top => (TOP_SIZE, 8),
+            Bar::Bottom => (BOTTOM_SIZE, viewport.bottom - BOTTOM_SIZE.1 - 8),
+        };
+        let left = ((viewport.right - width) / 2).max(0);
+        RECT {
+            left,
+            right: left + width,
+            top,
+            bottom: top + height,
+        }
+    }
+
+    unsafe fn layout(&mut self) {
         unsafe {
-            let show = interface_shown(self.interface, self.fullscreen.is_some());
-            for &(_, hwnd, x, y, width) in &self.controls {
-                ShowWindow(hwnd, if show { SW_SHOW } else { SW_HIDE });
-                MoveWindow(
-                    hwnd,
-                    x,
-                    y,
-                    width,
-                    if hwnd == self.control(SPEED) { 280 } else { 28 },
-                    1,
+            let viewport = self.viewport();
+            if viewport.right == 0 || viewport.bottom == 0 || IsIconic(self.hwnd) != 0 {
+                self.bar_layout_size = None;
+                return;
+            }
+            let size = (viewport.right, viewport.bottom);
+            let moved = self.bar_layout_size != Some(size);
+            self.bar_layout_size = Some(size);
+            let focus = GetFocus();
+            let editing = [ADDRESS, PAGE, FRAME_NUMBER, SPEED]
+                .into_iter()
+                .find(|&id| !focus.is_null() && focus == self.control(id))
+                .map(control_bar);
+            let next = [Bar::Top, Bar::Bottom].map(|bar| self.bars.visible(bar, editing));
+            let changed = next != self.visible_bars;
+            if moved || changed {
+                let mut batch = BeginDeferWindowPos(self.controls.len() as i32);
+                for &(id, hwnd, x, y) in &self.controls {
+                    let bar = control_bar(id);
+                    if !batch.is_null() {
+                        let rect = Self::bar_rect(bar, viewport);
+                        batch = DeferWindowPos(
+                            batch,
+                            hwnd,
+                            ptr::null_mut(),
+                            rect.left + x,
+                            rect.top + y,
+                            0,
+                            0,
+                            Self::bar_position_flags(moved, changed, next[bar as usize]),
+                        );
+                    }
+                }
+                if batch.is_null() || EndDeferWindowPos(batch) == 0 {
+                    for &(id, hwnd, x, y) in &self.controls {
+                        let bar = control_bar(id);
+                        let rect = Self::bar_rect(bar, viewport);
+                        SetWindowPos(
+                            hwnd,
+                            ptr::null_mut(),
+                            rect.left + x,
+                            rect.top + y,
+                            0,
+                            0,
+                            Self::bar_position_flags(moved, changed, next[bar as usize]),
+                        );
+                    }
+                }
+                self.visible_bars = next;
+                self.metadata_layout();
+                // Do not copy individual controls over the old image/bar while
+                // resizing. Repaint the parent background and children together.
+                RedrawWindow(
+                    self.hwnd,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE,
                 );
             }
-            InvalidateRect(self.hwnd, ptr::null(), 0);
-            self.metadata_layout();
+        }
+    }
+
+    fn bar_position_flags(moved: bool, changed: bool, visible: bool) -> u32 {
+        SWP_NOSIZE
+            | SWP_NOZORDER
+            | SWP_NOACTIVATE
+            | SWP_NOREDRAW
+            | SWP_NOCOPYBITS
+            | if moved { 0 } else { SWP_NOMOVE }
+            | if !changed {
+                0
+            } else if visible {
+                SWP_SHOWWINDOW
+            } else {
+                SWP_HIDEWINDOW
+            }
+    }
+
+    unsafe fn sync_pins(&mut self) {
+        unsafe {
+            for (bar, id) in [(Bar::Top, TOP_PIN), (Bar::Bottom, BOTTOM_PIN)] {
+                self.text(
+                    id,
+                    if self.bars.pinned(bar) {
+                        "고정 해제"
+                    } else {
+                        "고정"
+                    },
+                );
+            }
+            self.layout();
+        }
+    }
+
+    unsafe fn track_bars(&mut self, target: HWND, leaving: bool) {
+        unsafe {
+            if leaving && self.tracking_mouse == target {
+                self.tracking_mouse = ptr::null_mut();
+            }
+            if !leaving && self.tracking_mouse != target {
+                let mut track = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: target,
+                    dwHoverTime: 0,
+                };
+                if TrackMouseEvent(&mut track) != 0 {
+                    self.tracking_mouse = target;
+                }
+            }
+            let viewport = self.viewport();
+            let mut point = POINT::default();
+            let inside = GetCursorPos(&mut point) != 0
+                && ScreenToClient(self.hwnd, &mut point) != 0
+                && (0..viewport.right).contains(&point.x);
+            let before = self.bars;
+            self.bars.point(
+                inside.then_some(point.y),
+                viewport.bottom,
+                14,
+                TOP_SIZE.1 + 10,
+                BOTTOM_SIZE.1 + 10,
+            );
+            if self.bars != before {
+                self.layout();
+            }
         }
     }
     unsafe fn metadata_layout(&self) {
@@ -273,22 +532,34 @@ impl App {
                 .lines()
                 .map(|line| line.chars().count().div_ceil(columns).max(1))
                 .sum();
-            let height = (viewport.bottom - viewport.top - 24)
+            let top = if self.visible_bars[Bar::Top as usize] {
+                TOP_SIZE.1 + 18
+            } else {
+                12
+            };
+            let bottom = if self.visible_bars[Bar::Bottom as usize] {
+                BOTTOM_SIZE.1 + 12
+            } else {
+                12
+            };
+            let height = (viewport.bottom - top - bottom)
                 .min(300)
                 .min((lines * 20 + 20) as i32);
             let show = self.metadata.visible() && width >= 80 && height >= 40;
-            if show {
+            let bounds = (top, width, height);
+            if show && self.metadata_bounds.get() != Some(bounds) {
                 SetWindowPos(
                     self.metadata_hwnd,
-                    HWND_TOP,
+                    ptr::null_mut(),
                     12,
-                    viewport.top + 12,
+                    bounds.0,
                     width,
                     height,
-                    SWP_NOACTIVATE,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
                 );
+                self.metadata_bounds.set(Some(bounds));
             }
-            ShowWindow(self.metadata_hwnd, if show { SW_SHOWNA } else { SW_HIDE });
+            set_child_visible(self.metadata_hwnd, show);
         }
     }
     unsafe fn sync_metadata(&self) {
@@ -300,7 +571,7 @@ impl App {
                 );
             }
             self.metadata_layout();
-            InvalidateRect(self.hwnd, ptr::null(), 0);
+            self.invalidate_picture();
         }
     }
     unsafe fn metadata_test(&mut self) {
@@ -310,11 +581,15 @@ impl App {
                 if self.metadata.enabled || IsWindowVisible(self.metadata_hwnd) != 0 {
                     return false;
                 }
-                // Trusted UI-only fixture, not decoded pixels or a protection bypass.
-                self.metadata.update(&[ncat_protocol::MetadataEntry {
-                    name: "Title".into(),
-                    value: "<literal> 한글 synthetic metadata".into(),
-                }]);
+                if self.smoke == Smoke::MetadataWindow {
+                    // UI-only fixture for checks that cannot start a protected worker.
+                    self.metadata.update(&[ncat_protocol::MetadataEntry {
+                        name: "Title".into(),
+                        value: "<literal> 한글 synthetic metadata".into(),
+                    }]);
+                } else if !self.metadata.text.contains("<literal>") {
+                    return false;
+                }
                 self.sync_metadata();
                 if IsWindowVisible(self.metadata_hwnd) != 0 {
                     return false;
@@ -323,7 +598,11 @@ impl App {
                 if !self.key(VK_TAB as u32) || IsWindowVisible(self.metadata_hwnd) == 0 {
                     return false;
                 }
-                if GetFocus() != focus {
+                if GetFocus() != focus
+                    || self.metadata_bounds.get().is_none_or(|(top, _, _)| {
+                        top < Self::bar_rect(Bar::Top, self.viewport()).bottom
+                    })
+                {
                     return false;
                 }
                 if !self.key(VK_TAB as u32) || IsWindowVisible(self.metadata_hwnd) != 0 {
@@ -337,7 +616,8 @@ impl App {
             self.success = result;
             if result {
                 println!(
-                    "metadata_window_smoke=ok synthetic=true default_off=true tab=true focus_unchanged=true"
+                    "metadata_window_smoke=ok synthetic={} default_off=true tab=true focus_unchanged=true",
+                    self.smoke == Smoke::MetadataWindow,
                 );
             }
             self.close();
@@ -389,10 +669,21 @@ impl App {
             PostMessageW(self.hwnd, VIEWPORT_CHANGED, 0, 0);
         }
     }
+    unsafe fn invalidate_picture(&self) {
+        unsafe {
+            InvalidateRect(self.hwnd, &self.viewport(), 0);
+        }
+    }
     unsafe fn viewport_changed(&mut self) {
         unsafe {
             self.layout();
-            KillTimer(self.hwnd, RESIZE);
+            self.metadata_layout();
+            self.queue_view_refresh();
+        }
+    }
+    unsafe fn queue_view_refresh(&mut self) {
+        unsafe {
+            self.cancel_view_refresh();
             if self.closing.is_some() || IsIconic(self.hwnd) != 0 {
                 return;
             }
@@ -403,15 +694,25 @@ impl App {
             let view = self.view();
             self.resized_view = Some(view);
             if view != self.animation_view && self.book.as_ref().is_some_and(|book| book.complete) {
-                // Repaint the retained frame immediately, then request a sharper
-                // decode once resizing settles, rather than decoding every pixel.
-                SetTimer(self.hwnd, RESIZE, 100, None);
+                self.view_deadline =
+                    Some(Instant::now() + Duration::from_millis(u64::from(VIEW_SETTLE_MS)));
+                SetTimer(self.hwnd, RESIZE, VIEW_SETTLE_MS, None);
             }
+        }
+    }
+    unsafe fn cancel_view_refresh(&mut self) {
+        unsafe {
+            KillTimer(self.hwnd, RESIZE);
+            self.view_deadline = None;
         }
     }
     unsafe fn resize_finished(&mut self) {
         unsafe {
-            KillTimer(self.hwnd, RESIZE);
+            // KillTimer cannot remove an already posted WM_TIMER.
+            if self.view_deadline.is_none_or(|at| Instant::now() < at) {
+                return;
+            }
+            self.cancel_view_refresh();
             if self.closing.is_none()
                 && IsIconic(self.hwnd) == 0
                 && self.view() != self.animation_view
@@ -422,17 +723,25 @@ impl App {
     }
     unsafe fn resize_test(&mut self) {
         unsafe {
-            if let Some((expected, paints)) = self.resize_test_expected.take()
+            if let Some((expected, paints)) = self.resize_test_expected.take() {
                 // The window manager may adjust maximize bounds asynchronously.
                 // Validate the settled client area, not the immediate ShowWindow result.
-                && (self.resized_view != Some(self.view()) || self.paint_count <= paints)
-            {
-                eprintln!(
-                    "nCatImage: resize phase={} expected={expected:?} actual={:?} paints={paints}->{}",
-                    self.resize_test_phase, self.resized_view, self.paint_count
-                );
-                self.close();
-                return;
+                if self.resized_view != Some(self.view())
+                    || self.paint_count <= paints
+                    || !self.bar_geometry_matches()
+                    || (self.smoke == Smoke::ResizeFrame
+                        && self.buffered_picture != Some(self.picture_dimensions(self.viewport())))
+                {
+                    eprintln!(
+                        "nCatImage: resize phase={} expected={expected:?} actual={:?} paints={paints}->{} buffered={:?}",
+                        self.resize_test_phase,
+                        self.resized_view,
+                        self.paint_count,
+                        self.buffered_picture,
+                    );
+                    self.close();
+                    return;
+                }
             }
             match self.resize_test_phase {
                 0 => {
@@ -454,15 +763,68 @@ impl App {
                 }
                 3 | 4 => self.fullscreen(),
                 5 | 6 => {
-                    self.interface = !self.interface;
-                    self.layout();
-                    self.queue_resize();
+                    let view = self.view();
+                    let generation = self.backend.generation();
+                    if self.resize_test_phase == 5 {
+                        self.bars.toggle_both();
+                        self.bars.point(None, 0, 0, 0, 0);
+                    } else {
+                        self.bars.toggle_pin(Bar::Top);
+                        let height = self.viewport().bottom;
+                        self.bars
+                            .point(Some(height - 2), height, 14, TOP_SIZE.1, BOTTOM_SIZE.1);
+                    }
+                    self.sync_pins();
+                    let expected = if self.resize_test_phase == 5 {
+                        [false, false]
+                    } else {
+                        [true, true]
+                    };
+                    if self.visible_bars != expected
+                        || self.view() != view
+                        || self.backend.generation() != generation
+                    {
+                        eprintln!("nCatImage: overlay visibility changed the image view or decode");
+                        self.close();
+                        return;
+                    }
                 }
                 7 => {
                     ShowWindow(self.hwnd, SW_MINIMIZE);
                 }
                 8 => {
                     ShowWindow(self.hwnd, SW_RESTORE);
+                }
+                9 => {
+                    for (width, height) in [(780, 470), (940, 700), (720, 300), (860, 570)] {
+                        SetWindowPos(
+                            self.hwnd,
+                            ptr::null_mut(),
+                            0,
+                            0,
+                            width,
+                            height,
+                            SWP_NOMOVE | SWP_NOZORDER,
+                        );
+                    }
+                }
+                10 | 11 if self.smoke == Smoke::ResizeFrame => {
+                    let generation = self.backend.generation();
+                    if self.resize_test_phase == 10 {
+                        for _ in 0..4 {
+                            self.zoom(1.25);
+                        }
+                    } else {
+                        self.zoom(0.0);
+                    }
+                    if self.frame.is_none()
+                        || self.backend.generation() != generation
+                        || self.view_deadline.is_none()
+                    {
+                        eprintln!("nCatImage: zoom must retain the frame and defer decoding");
+                        self.close();
+                        return;
+                    }
                 }
                 _ => {
                     self.success = true;
@@ -474,6 +836,36 @@ impl App {
             if IsIconic(self.hwnd) == 0 {
                 self.resize_test_expected = Some((self.view(), self.paint_count));
             }
+        }
+    }
+    unsafe fn bar_geometry_matches(&self) -> bool {
+        unsafe {
+            let viewport = self.viewport();
+            let mut origin = POINT::default();
+            if ClientToScreen(self.hwnd, &mut origin) == 0 {
+                return false;
+            }
+            self.controls.iter().all(|&(id, hwnd, x, y)| {
+                let bar = control_bar(id);
+                let expected = Self::bar_rect(bar, viewport);
+                let mut actual = RECT::default();
+                let visible = IsWindowVisible(hwnd) != 0;
+                let valid = GetWindowRect(hwnd, &mut actual) != 0
+                    && actual.left - origin.x == expected.left + x
+                    && actual.top - origin.y == expected.top + y
+                    && visible == self.visible_bars[bar as usize];
+                if !valid {
+                    eprintln!(
+                        "bar control {id}: actual=({}, {}, {visible}) expected=({}, {}, {})",
+                        actual.left - origin.x,
+                        actual.top - origin.y,
+                        expected.left + x,
+                        expected.top + y,
+                        self.visible_bars[bar as usize]
+                    );
+                }
+                valid
+            })
         }
     }
     unsafe fn navigation_ui(&self) {
@@ -528,6 +920,7 @@ impl App {
     }
     unsafe fn open(&mut self, path: PathBuf) {
         unsafe {
+            self.cancel_view_refresh();
             self.reset(true);
             self.book = None;
             self.frame = None;
@@ -557,6 +950,7 @@ impl App {
             else {
                 return;
             };
+            self.cancel_view_refresh();
             self.reset(index != self.selected);
             self.selected = index;
             self.animation_view = self.view();
@@ -652,9 +1046,14 @@ impl App {
             if self.book.is_none() {
                 return;
             }
+            let previous = self.reader.zoom;
             self.reader.change_zoom(factor);
+            if self.reader.zoom == previous && self.pan == (0, 0) {
+                return;
+            }
             self.pan = (0, 0);
-            self.load(self.selected);
+            self.invalidate_picture();
+            self.queue_view_refresh();
         }
     }
     unsafe fn fullscreen(&mut self) {
@@ -711,6 +1110,7 @@ impl App {
             if self.closing.is_some() || prepared.event.generation() != self.backend.generation() {
                 return;
             }
+            let generation = prepared.event.generation();
             match prepared.event {
                 Event::Catalog { book, .. } => {
                     self.selected = book.selected;
@@ -750,14 +1150,25 @@ impl App {
                         ),
                     );
                     let animated = frame.info.animation.is_some();
+                    let first_frame = self.frame.is_none();
                     self.frame = Some(Display {
                         frame,
                         bgra: pixels,
                     });
                     self.playback_ui();
                     self.schedule();
-                    InvalidateRect(self.hwnd, ptr::null(), 0);
+                    self.invalidate_picture();
                     self.smoke_frames += 1;
+                    if self.smoke == Smoke::ResizeFrame && first_frame {
+                        SetTimer(self.hwnd, RESIZE_TEST, 250, None);
+                    }
+                    if self.smoke == Smoke::MetadataFrame && first_frame {
+                        self.metadata_test();
+                    }
+                    if self.modal_load_generation == Some(generation) {
+                        self.success = self.reader.original == (1200, 800);
+                        self.close();
+                    }
                     if self.smoke == Smoke::Frame
                         || (self.smoke == Smoke::Animation && animated && self.smoke_frames >= 6)
                     {
@@ -786,6 +1197,26 @@ impl App {
                         self.close();
                     }
                 }
+            }
+            if self.smoke == Smoke::ModalLoad
+                && self.modal_load_generation.is_none()
+                && self.frame.is_some()
+                && self.book.as_ref().is_some_and(|book| book.complete)
+            {
+                self.load(2);
+                self.modal_load_generation = Some(self.backend.generation());
+                let mut message = MSG::default();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    if PeekMessageW(&mut message, self.hwnd, RESULT, RESULT, PM_REMOVE) != 0 {
+                        DispatchMessageW(&message);
+                        eprintln!("nested pump dispatched page result while App was borrowed");
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                eprintln!("nested pump did not receive page result");
+                self.close();
             }
             if self.smoke == Smoke::Navigation && self.frame.is_some() {
                 let len = self
@@ -852,6 +1283,10 @@ impl App {
                 DIRECTION => {
                     self.rtl = !self.rtl;
                     self.text(DIRECTION, if self.rtl { "우→좌" } else { "좌→우" });
+                }
+                TOP_PIN | BOTTOM_PIN => {
+                    self.bars.toggle_pin(control_bar(id));
+                    self.sync_pins();
                 }
                 SMALLER => self.zoom(1.0 / 1.25),
                 FIT => self.zoom(0.0),
@@ -944,22 +1379,26 @@ impl App {
                     if self.fullscreen.is_some() {
                         self.fullscreen();
                     }
-                    self.interface = true;
-                    self.layout();
-                    self.queue_resize();
                     self.controls_input = true;
+                    if !self.visible_bars[Bar::Top as usize] {
+                        self.bars.point(
+                            Some(0),
+                            self.viewport().bottom,
+                            14,
+                            TOP_SIZE.1,
+                            BOTTOM_SIZE.1,
+                        );
+                        self.layout();
+                    }
                     SetFocus(self.control(ADDRESS));
                 }
                 Command::Quit => self.close(),
                 Command::Fullscreen => self.fullscreen(),
                 Command::ToggleInterface => {
-                    if self.fullscreen.is_none() {
-                        self.interface = !self.interface;
-                        self.layout();
-                        self.queue_resize();
-                        SetFocus(self.hwnd);
-                        self.controls_input = false;
-                    }
+                    SetFocus(self.hwnd);
+                    self.controls_input = false;
+                    self.bars.toggle_both();
+                    self.sync_pins();
                 }
                 Command::Page(key) => self.navigate(ncat_presentation::page_step(
                     key,
@@ -995,73 +1434,202 @@ impl App {
             true
         }
     }
+    fn picture_dimensions(&self, rect: RECT) -> (i32, i32) {
+        let height = rect.bottom - rect.top;
+        self.reader
+            .picture_size((rect.right, height))
+            .unwrap_or_else(|| {
+                let (w, h) = ncat_core::fit_size(
+                    self.reader.original.0,
+                    self.reader.original.1,
+                    rect.right.max(1) as u32,
+                    height.max(1) as u32,
+                )
+                .unwrap_or((1, 1));
+                (w as i32, h as i32)
+            })
+    }
+
+    unsafe fn draw_picture(&mut self, dc: HDC, rect: RECT) -> Option<(i32, i32)> {
+        let (w, h) = self.picture_dimensions(rect);
+        let height = rect.bottom - rect.top;
+        let mut drawn = None;
+        // SAFETY: dc is a live paint or memory DC, clipped to the picture area.
+        // Display owns the validated, tightly packed top-down BGRA pixels.
+        unsafe {
+            let brush = GetStockObject(DC_BRUSH);
+            SetDCBrushColor(dc, 0x202020);
+            if let Some(display) = &self.frame {
+                let max_x = (w - rect.right).max(0) / 2;
+                let max_y = (h - height).max(0) / 2;
+                self.pan.0 = self.pan.0.clamp(-max_x, max_x);
+                self.pan.1 = self.pan.1.clamp(-max_y, max_y);
+                let x = (rect.right - w) / 2 + self.pan.0;
+                let y = rect.top + (height - h) / 2 + self.pan.1;
+                let width = display.frame.info.width as i32;
+                let height = display.frame.info.height as i32;
+                SetStretchBltMode(dc, HALFTONE);
+                SetBrushOrgEx(dc, 0, 0, ptr::null_mut());
+                let lines = StretchDIBits(
+                    dc,
+                    x,
+                    y,
+                    w,
+                    h,
+                    0,
+                    0,
+                    width,
+                    height,
+                    display.bgra.as_ptr().cast(),
+                    &bitmap_info(width, height),
+                    DIB_RGB_COLORS,
+                    SRCCOPY,
+                );
+                if lines > 0 {
+                    // The fallback draws directly to the window. Fill only the
+                    // gutters so it never erases the image before replacing it.
+                    let left = x.clamp(0, rect.right);
+                    let right = (x + w).clamp(0, rect.right);
+                    let top = y.clamp(rect.top, rect.bottom);
+                    let bottom = (y + h).clamp(rect.top, rect.bottom);
+                    for (left, top, right, bottom) in [
+                        (0, rect.top, rect.right, top),
+                        (0, bottom, rect.right, rect.bottom),
+                        (0, top, left, bottom),
+                        (right, top, rect.right, bottom),
+                    ] {
+                        if left < right && top < bottom {
+                            FillRect(
+                                dc,
+                                &RECT {
+                                    left,
+                                    top,
+                                    right,
+                                    bottom,
+                                },
+                                brush,
+                            );
+                        }
+                    }
+                    drawn = Some((w, h));
+                }
+            }
+            if drawn.is_none() {
+                FillRect(dc, &rect, brush);
+            }
+        }
+        drawn
+    }
+
     unsafe fn paint(&mut self) {
         unsafe {
             let mut paint: PAINTSTRUCT = std::mem::zeroed();
             let dc = BeginPaint(self.hwnd, &mut paint);
             if !dc.is_null() {
                 self.paint_count = self.paint_count.saturating_add(1);
-                let mut client: RECT = std::mem::zeroed();
-                GetClientRect(self.hwnd, &mut client);
-                FillRect(dc, &client, GetSysColorBrush(COLOR_BTNFACE));
                 let rect = self.viewport();
-                IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
-                let brush = CreateSolidBrush(0x202020);
-                FillRect(dc, &rect, brush);
-                DeleteObject(brush);
-                if let Some(display) = &self.frame {
-                    let width = display.frame.info.width as i32;
-                    let height = display.frame.info.height as i32;
-                    let (w, h) = self
-                        .reader
-                        .picture_size((rect.right, rect.bottom - rect.top))
-                        .unwrap_or_else(|| {
-                            let (w, h) = ncat_core::fit_size(
-                                width as u32,
-                                height as u32,
-                                rect.right.max(1) as u32,
-                                (rect.bottom - rect.top).max(1) as u32,
-                            )
-                            .unwrap_or((1, 1));
-                            (w as i32, h as i32)
-                        });
-                    self.pan.0 = self
-                        .pan
-                        .0
-                        .clamp(-((w - rect.right).max(0) / 2), (w - rect.right).max(0) / 2);
-                    self.pan.1 = self.pan.1.clamp(
-                        -((h - (rect.bottom - rect.top)).max(0) / 2),
-                        (h - (rect.bottom - rect.top)).max(0) / 2,
-                    );
-                    let mut bitmap: BITMAPINFO = std::mem::zeroed();
-                    bitmap.bmiHeader = BITMAPINFOHEADER {
-                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                        biWidth: width,
-                        biHeight: -height,
-                        biPlanes: 1,
-                        biBitCount: 32,
-                        biCompression: BI_RGB,
-                        ..std::mem::zeroed()
-                    };
-                    SetStretchBltMode(dc, HALFTONE);
-                    StretchDIBits(
-                        dc,
-                        (rect.right - w) / 2 + self.pan.0,
-                        rect.top + (rect.bottom - rect.top - h) / 2 + self.pan.1,
-                        w,
-                        h,
-                        0,
-                        0,
-                        width,
-                        height,
-                        display.bgra.as_ptr().cast(),
-                        &bitmap,
-                        DIB_RGB_COLORS,
-                        SRCCOPY,
-                    );
+                let mut dirty = RECT::default();
+                if IntersectRect(&mut dirty, &rect, &paint.rcPaint) != 0 {
+                    PaintBuffer::ensure(&mut self.paint_buffer, dc, rect.right, rect.bottom);
+                    self.buffered_picture = None;
+                    if let Some(memory) = self.paint_buffer.as_ref().map(|b| b.dc) {
+                        IntersectClipRect(memory, dirty.left, dirty.top, dirty.right, dirty.bottom);
+                        let drawn = self.draw_picture(memory, rect);
+                        self.draw_bars(memory, rect);
+                        SelectClipRgn(memory, ptr::null_mut());
+                        if BitBlt(
+                            dc,
+                            dirty.left,
+                            dirty.top,
+                            dirty.right - dirty.left,
+                            dirty.bottom - dirty.top,
+                            memory,
+                            dirty.left,
+                            dirty.top,
+                            SRCCOPY,
+                        ) != 0
+                        {
+                            self.buffered_picture = drawn;
+                        } else {
+                            IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
+                            self.draw_picture(dc, rect);
+                            self.draw_bars(dc, rect);
+                        }
+                    } else {
+                        IntersectClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
+                        self.draw_picture(dc, rect);
+                        self.draw_bars(dc, rect);
+                    }
                 }
             }
             EndPaint(self.hwnd, &paint);
+        }
+    }
+
+    unsafe fn draw_bars(&mut self, dc: HDC, viewport: RECT) {
+        // SAFETY: this paint runs on the owning UI thread. Temporary regions
+        // and the saved clip are released before returning to the caller.
+        unsafe {
+            if !self.visible_bars.iter().any(|&visible| visible) {
+                return;
+            }
+            PaintBuffer::ensure(&mut self.bar_tint, dc, 1, 1);
+            let brush = GetStockObject(DC_BRUSH);
+            SetDCBrushColor(dc, 0x181818);
+            if let Some(tint) = &self.bar_tint {
+                SetDCBrushColor(tint.dc, 0x181818);
+                FillRect(
+                    tint.dc,
+                    &RECT {
+                        right: 1,
+                        bottom: 1,
+                        ..Default::default()
+                    },
+                    brush,
+                );
+            }
+            for bar in [Bar::Top, Bar::Bottom] {
+                if !self.visible_bars[bar as usize] {
+                    continue;
+                }
+                let r = Self::bar_rect(bar, viewport);
+                let region = CreateRoundRectRgn(r.left, r.top, r.right, r.bottom, 20, 20);
+                if region.is_null() {
+                    continue;
+                }
+                let saved = SaveDC(dc);
+                let blended = if saved != 0 {
+                    let ok = ExtSelectClipRgn(dc, region, RGN_AND) != RGN_ERROR
+                        && self.bar_tint.as_ref().is_some_and(|tint| {
+                            GdiAlphaBlend(
+                                dc,
+                                r.left,
+                                r.top,
+                                r.right - r.left,
+                                r.bottom - r.top,
+                                tint.dc,
+                                0,
+                                0,
+                                1,
+                                1,
+                                BLENDFUNCTION {
+                                    BlendOp: AC_SRC_OVER as u8,
+                                    BlendFlags: 0,
+                                    SourceConstantAlpha: 225,
+                                    AlphaFormat: 0,
+                                },
+                            ) != 0
+                        });
+                    RestoreDC(dc, saved);
+                    ok
+                } else {
+                    false
+                };
+                if !blended {
+                    FillRgn(dc, region, brush);
+                }
+                DeleteObject(region);
+            }
         }
     }
 }
@@ -1131,10 +1699,55 @@ unsafe extern "system" fn procedure(
             PostQuitMessage(0);
             return 0;
         }
-        if message == WM_SIZE || message == WM_EXITSIZEMOVE {
-            // Must also run for synchronous reentry from fullscreen/maximize.
+        if message == WM_ERASEBKGND {
+            return 1;
+        }
+        if message == WM_NCCALCSIZE && wparam != 0 {
+            // The image and floating bars are anchored differently. No region
+            // from the old client surface is valid to copy when its size changes.
+            DefWindowProcW(hwnd, message, wparam, lparam);
+            return WVR_REDRAW as LRESULT;
+        }
+        if message == WM_GETMINMAXINFO {
+            let info = &mut *(lparam as *mut MINMAXINFO);
+            info.ptMinTrackSize.x = info.ptMinTrackSize.x.max(BOTTOM_SIZE.0 + 32);
+            info.ptMinTrackSize.y = info.ptMinTrackSize.y.max(260);
+            return 0;
+        }
+        if message == WM_CTLCOLORSTATIC
+            && matches!(GetDlgCtrlID(lparam as HWND) as u16, STATUS | FRAME_INFO)
+        {
+            let dc = wparam as HDC;
+            SetTextColor(dc, 0x00ffffff);
+            SetBkColor(dc, 0x181818);
+            SetDCBrushColor(dc, 0x181818);
+            return GetStockObject(DC_BRUSH) as isize;
+        }
+        if matches!(message, WM_SIZE | WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE) {
+            // Interactive sizing can repaint before the posted viewport update.
+            // Align controls now when possible, but keep decoding deferred.
+            let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App>;
+            if !state.is_null()
+                && let Ok(mut app) = (*state).try_borrow_mut()
+            {
+                if message == WM_ENTERSIZEMOVE {
+                    app.live_sizing = true;
+                } else if message == WM_EXITSIZEMOVE {
+                    app.live_sizing = false;
+                } else if app.live_sizing && !app.controls.is_empty() {
+                    app.layout();
+                }
+            }
+            if message == WM_ENTERSIZEMOVE {
+                return 0;
+            }
             InvalidateRect(hwnd, ptr::null(), 0);
-            PostMessageW(hwnd, VIEWPORT_CHANGED, 0, 0);
+            PostMessageW(
+                hwnd,
+                VIEWPORT_CHANGED,
+                usize::from(message == WM_SIZE && wparam == SIZE_MINIMIZED as usize),
+                0,
+            );
             return 0;
         }
         let data = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<App>;
@@ -1151,7 +1764,6 @@ unsafe extern "system" fn procedure(
                 app.paint();
                 0
             }
-            WM_ERASEBKGND => 1,
             WM_CTLCOLORSTATIC if lparam as HWND == app.metadata_hwnd => {
                 let dc = wparam as windows_sys::Win32::Graphics::Gdi::HDC;
                 SetTextColor(dc, 0x00ffffff);
@@ -1159,6 +1771,12 @@ unsafe extern "system" fn procedure(
                 GetStockObject(BLACK_BRUSH) as isize
             }
             VIEWPORT_CHANGED => {
+                // A synchronous WM_PAINT during a window transition can consume
+                // the initial invalidation while App is still borrowed.
+                app.invalidate_picture();
+                if wparam != 0 {
+                    app.bar_layout_size = None;
+                }
                 app.viewport_changed();
                 0
             }
@@ -1166,12 +1784,9 @@ unsafe extern "system" fn procedure(
                 app.command((wparam & 0xffff) as u16, ((wparam >> 16) & 0xffff) as u16);
                 0
             }
-            RESULT => {
-                if let Ok(event) = app.events.try_recv() {
-                    app.consume(event);
-                }
-                0
-            }
+            // Wake only. A modal loop can dispatch this while App is borrowed;
+            // the outer message loop drains the data after the modal call returns.
+            RESULT => 0,
             WM_TIMER => {
                 if wparam == RESIZE {
                     app.resize_finished();
@@ -1205,6 +1820,7 @@ unsafe extern "system" fn procedure(
             WM_LBUTTONDOWN => {
                 app.controls_input = false;
                 SetFocus(hwnd);
+                app.layout();
                 if app.reader.zoom > 1.0 {
                     app.drag = Some((
                         (lparam as u16) as i16 as i32,
@@ -1228,7 +1844,7 @@ unsafe extern "system" fn procedure(
                     app.pan.0 += point.0 - x;
                     app.pan.1 += point.1 - y;
                     app.drag = Some(point);
-                    InvalidateRect(hwnd, ptr::null(), 0);
+                    app.invalidate_picture();
                 }
                 0
             }
@@ -1238,7 +1854,7 @@ unsafe extern "system" fn procedure(
                     app.zoom(if delta > 0.0 { 1.1 } else { 1.0 / 1.1 });
                 } else if app.reader.zoom > 1.0 {
                     app.pan.1 += (delta / 2.0) as i32;
-                    InvalidateRect(hwnd, ptr::null(), 0);
+                    app.invalidate_picture();
                 } else {
                     if app.wheel.signum() != delta.signum() {
                         app.wheel = delta;
@@ -1302,12 +1918,10 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
         let com = CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32);
         let instance = GetModuleHandleW(ptr::null());
         let class = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(procedure),
             hInstance: instance,
             lpszClassName: class_name.as_ptr(),
             hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
-            hbrBackground: GetSysColorBrush(COLOR_WINDOW),
             ..std::mem::zeroed()
         };
         if RegisterClassW(&class) == 0 {
@@ -1339,39 +1953,40 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                 let mut app = state.borrow_mut();
                 app.hwnd = hwnd;
                 let specs = [
-                    (OPEN, "BUTTON", "파일", 8, 4, 52),
-                    (FOLDER, "BUTTON", "폴더", 64, 4, 52),
-                    (ADDRESS, "EDIT", "", 120, 4, 265),
-                    (CONNECT, "BUTTON", "주소 열기", 389, 4, 80),
-                    (PREVIOUS, "BUTTON", "이전", 473, 4, 52),
-                    (PAGE, "EDIT", "1", 529, 4, 50),
-                    (PAGE_GO, "BUTTON", "이동", 583, 4, 48),
-                    (NEXT, "BUTTON", "다음", 635, 4, 52),
-                    (DIRECTION, "BUTTON", "좌→우", 691, 4, 62),
-                    (SMALLER, "BUTTON", "−", 757, 4, 32),
-                    (FIT, "BUTTON", "맞춤", 793, 4, 48),
-                    (LARGER, "BUTTON", "+", 845, 4, 32),
-                    (ROTATE, "BUTTON", "회전", 881, 4, 48),
-                    (FULLSCREEN, "BUTTON", "전체 화면", 933, 4, 90),
-                    (FRAME_INFO, "STATIC", "애니메이션 없음", 8, 38, 205),
-                    (FRAME_PREVIOUS, "BUTTON", "이전 프레임 ,", 217, 36, 110),
-                    (FRAME_NEXT, "BUTTON", "다음 프레임 .", 331, 36, 110),
-                    (PLAY, "BUTTON", "일시정지 /", 445, 36, 104),
-                    (SPEED, "COMBOBOX", "", 553, 36, 90),
-                    (FRAME_NUMBER, "EDIT", "1", 647, 36, 70),
-                    (FRAME_GO, "BUTTON", "프레임 이동", 721, 36, 100),
+                    (OPEN, "BUTTON", "파일", 8, 8, 52),
+                    (FOLDER, "BUTTON", "폴더", 64, 8, 52),
+                    (ADDRESS, "EDIT", "", 120, 8, 182),
+                    (CONNECT, "BUTTON", "주소 열기", 306, 8, 80),
+                    (DIRECTION, "BUTTON", "좌→우", 390, 8, 62),
+                    (FULLSCREEN, "BUTTON", "전체 화면", 456, 8, 82),
+                    (TOP_PIN, "BUTTON", "고정 해제", 542, 8, 72),
+                    (PREVIOUS, "BUTTON", "이전", 120, 8, 52),
+                    (PAGE, "EDIT", "1", 176, 8, 50),
+                    (PAGE_GO, "BUTTON", "이동", 230, 8, 48),
+                    (NEXT, "BUTTON", "다음", 282, 8, 52),
+                    (SMALLER, "BUTTON", "−", 338, 8, 32),
+                    (FIT, "BUTTON", "맞춤", 374, 8, 48),
+                    (LARGER, "BUTTON", "+", 426, 8, 32),
+                    (ROTATE, "BUTTON", "회전", 462, 8, 48),
+                    (BOTTOM_PIN, "BUTTON", "고정 해제", 596, 8, 72),
+                    (FRAME_INFO, "STATIC", "애니메이션 없음", 10, 46, 184),
+                    (FRAME_PREVIOUS, "BUTTON", "이전 프레임", 198, 41, 83),
+                    (FRAME_NEXT, "BUTTON", "다음 프레임", 285, 41, 83),
+                    (PLAY, "BUTTON", "일시정지 /", 372, 41, 80),
+                    (SPEED, "COMBOBOX", "", 456, 41, 58),
+                    (FRAME_NUMBER, "EDIT", "1", 518, 41, 59),
+                    (FRAME_GO, "BUTTON", "프레임 이동", 581, 41, 87),
                     (
                         STATUS,
                         "STATIC",
                         "파일/폴더/ZIP/CBZ를 열거나 드롭하세요",
-                        8,
-                        72,
-                        1010,
+                        10,
+                        78,
+                        656,
                     ),
                 ];
                 for (id, kind, text, x, y, width) in specs {
                     let style = WS_CHILD
-                        | WS_VISIBLE
                         | if kind == "STATIC" { 0 } else { WS_TABSTOP }
                         | if kind == "EDIT" {
                             WS_BORDER | ES_AUTOHSCROLL as u32
@@ -1388,7 +2003,13 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                         x,
                         y,
                         width,
-                        if kind == "COMBOBOX" { 280 } else { 28 },
+                        if kind == "COMBOBOX" {
+                            280
+                        } else if kind == "STATIC" {
+                            18
+                        } else {
+                            28
+                        },
                         hwnd,
                         id as usize as _,
                         instance,
@@ -1404,7 +2025,7 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                         GetStockObject(DEFAULT_GUI_FONT) as usize,
                         1,
                     );
-                    app.controls.push((id, control, x, y, width));
+                    app.controls.push((id, control, x, y));
                 }
                 for speed in SPEEDS {
                     SendMessageW(
@@ -1476,8 +2097,13 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                                 Err(mpsc::TrySendError::Disconnected(_)) => return,
                             }
                         }
-                        if PostMessageW(window as HWND, RESULT, 0, 0) == 0 {
-                            break;
+                        while PostMessageW(window as HWND, RESULT, 0, 0) == 0 {
+                            if GetLastError() != ERROR_NOT_ENOUGH_QUOTA
+                                || stop.load(Ordering::Acquire)
+                            {
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(2));
                         }
                     }
                 })?;
@@ -1508,6 +2134,14 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
             }
             let mut message: MSG = std::mem::zeroed();
             loop {
+                {
+                    let mut app = state.borrow_mut();
+                    // Check the queue itself before blocking, even if a nested
+                    // message loop already removed the only RESULT wake.
+                    while let Ok(event) = app.events.try_recv() {
+                        app.consume(event);
+                    }
+                }
                 let status = GetMessageW(&mut message, ptr::null_mut(), 0, 0);
                 if status < 0 {
                     return Err(io::Error::last_os_error());
@@ -1517,6 +2151,13 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                 }
                 if message.message == WM_LBUTTONDOWN && message.hwnd != hwnd {
                     state.borrow_mut().controls_input = true;
+                }
+                if matches!(message.message, WM_MOUSEMOVE | WM_MOUSELEAVE)
+                    && (message.hwnd == hwnd || IsChild(hwnd, message.hwnd) != 0)
+                {
+                    state
+                        .borrow_mut()
+                        .track_bars(message.hwnd, message.message == WM_MOUSELEAVE);
                 }
                 if message.message == WM_KEYDOWN && state.borrow_mut().key(message.wParam as u32) {
                     continue;

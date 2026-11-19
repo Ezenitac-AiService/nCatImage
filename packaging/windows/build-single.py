@@ -32,9 +32,13 @@ def main():
     # No vendored runtime DLLs. System UCRT/API-set imports are still allowed.
     flags = "-C target-feature=+crt-static -C link-arg=-Wno-unused-command-line-argument"
     environment["RUSTFLAGS"] = (environment.get("RUSTFLAGS", "") + " " + flags).strip()
+    metadata = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+        cwd=ROOT, env=environment,
+    ))
     subprocess.run(["cargo", "build", "-p", "ncat-windows", "--target", TARGET,
                     "--release", "--locked"], cwd=ROOT, env=environment, check=True)
-    source = ROOT / "target" / TARGET / "release/ncat-windows.exe"
+    source = Path(metadata["target_directory"]) / TARGET / "release/ncat-windows.exe"
     imports = subprocess.check_output([str(readobj), "--coff-imports", str(source)], text=True)
     names = sorted(set(re.findall(r"^\s*Name:\s*(\S+\.dll)\s*$", imports, re.MULTILINE | re.IGNORECASE)))
     if not names:

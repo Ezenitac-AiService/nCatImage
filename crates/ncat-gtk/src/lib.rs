@@ -9,7 +9,10 @@ use ncat_backend::{
 };
 use ncat_core::Direction;
 use ncat_presentation::playback::Playback;
-use ncat_presentation::{ReaderView, adjacent, interface_shown};
+use ncat_presentation::{
+    ReaderView, adjacent,
+    reader_bars::{Bar, ReaderBars},
+};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -29,9 +32,11 @@ struct Ui {
     metadata_label: gtk::Label,
     metadata_panel: gtk::ScrolledWindow,
     window: gtk::ApplicationWindow,
-    header: gtk::HeaderBar,
+    header: gtk::Box,
     toolbar: gtk::Box,
-    interface_visible: Cell<bool>,
+    bars: Cell<ReaderBars>,
+    top_pin: gtk::Button,
+    bottom_pin: gtk::Button,
     interface_input: Cell<bool>,
     drop_generation: Cell<Option<u64>>,
     network_request: Cell<u64>,
@@ -175,7 +180,6 @@ impl Ui {
                 assert!(self.frame_status.text().contains("2.00×"));
                 assert!(!self.window.title().unwrap().contains("프레임"));
                 assert_eq!(self.frame_status.parent(), self.frame_previous.parent());
-                assert!(self.header.title_widget().is_none());
                 self.play_pause.emit_clicked();
                 assert!(self.frame_jump.is_sensitive());
                 self.frame_target.set_value(2.0);
@@ -376,12 +380,65 @@ impl Ui {
     }
 
     fn update_interface(&self) {
-        let visible = interface_shown(self.interface_visible.get(), self.window.is_fullscreen());
-        if !visible {
-            self.focus_viewer();
+        let editing = gtk::prelude::GtkWindowExt::focus(&self.window)
+            .filter(|focus| {
+                self.interface_input.get()
+                    && (focus.is::<gtk::SpinButton>()
+                        || focus.is::<gtk::Text>()
+                        || focus.is::<gtk::DropDown>())
+            })
+            .map(|focus| {
+                if focus.is_ancestor(&self.header) {
+                    Bar::Top
+                } else {
+                    Bar::Bottom
+                }
+            });
+        let bars = self.bars.get();
+        for (bar, widget, pin) in [
+            (Bar::Top, &self.header, &self.top_pin),
+            (Bar::Bottom, &self.toolbar, &self.bottom_pin),
+        ] {
+            let visible = bars.visible(bar, editing);
+            if widget.is_visible() != visible {
+                if !visible
+                    && gtk::prelude::GtkWindowExt::focus(&self.window)
+                        .is_some_and(|focus| focus.is_ancestor(widget))
+                {
+                    self.focus_viewer();
+                }
+                widget.set_visible(visible);
+            }
+            let text = if bars.pinned(bar) {
+                "고정 해제"
+            } else {
+                "고정"
+            };
+            if pin.label().as_deref() != Some(text) {
+                pin.set_label(text);
+            }
         }
-        self.header.set_visible(visible);
-        self.toolbar.set_visible(visible);
+        self.metadata_panel
+            .set_margin_top(if self.header.is_visible() {
+                self.header.height().max(42) + 22
+            } else {
+                12
+            });
+    }
+
+    fn point_bars(&self, y: Option<i32>, height: i32) {
+        let mut bars = self.bars.get();
+        bars.point(
+            y,
+            height,
+            14,
+            self.header.height() + 12,
+            self.toolbar.height() + 12,
+        );
+        if bars != self.bars.get() {
+            self.bars.set(bars);
+            self.update_interface();
+        }
     }
 
     fn interface_has_input(&self) -> bool {
@@ -1045,27 +1102,27 @@ fn build(
         .default_width(1000)
         .default_height(800)
         .build();
-    let header = gtk::HeaderBar::new();
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let open = gtk::Button::with_label("파일 열기");
     let folder = gtk::Button::with_label("폴더");
     let network = gtk::Button::with_label("네트워크");
     network.set_tooltip_text(Some("SMB / FTP / SFTP 주소 열기 · Ctrl+L"));
-    header.pack_start(&open);
-    header.pack_start(&folder);
-    header.pack_start(&network);
+    header.append(&open);
+    header.append(&folder);
+    header.append(&network);
     let direction = gtk::ToggleButton::with_label("우→좌");
     direction.set_tooltip_text(Some("좌우 방향키의 읽기 방향 · D"));
-    header.pack_end(&direction);
+    header.append(&direction);
     let fullscreen = gtk::Button::with_label("전체 화면");
-    header.pack_end(&fullscreen);
-    window.set_titlebar(Some(&header));
+    header.append(&fullscreen);
+    let top_pin = gtk::Button::with_label("고정 해제");
+    header.append(&top_pin);
     let frame_status = gtk::Label::new(Some("애니메이션 없음"));
     frame_status.set_ellipsize(gtk::pango::EllipsizeMode::End);
     frame_status.set_width_chars(24);
     frame_status.set_max_width_chars(24);
     frame_status.set_xalign(0.0);
 
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let picture = gtk::Picture::builder()
         .hexpand(true)
         .vexpand(true)
@@ -1100,6 +1157,7 @@ fn build(
     let fit = gtk::Button::with_label("맞춤");
     let larger = gtk::Button::with_label("+");
     let rotate = gtk::Button::with_label("회전");
+    let bottom_pin = gtk::Button::with_label("고정 해제");
     for widget in [
         previous.upcast_ref::<gtk::Widget>(),
         position.upcast_ref(),
@@ -1108,6 +1166,7 @@ fn build(
         fit.upcast_ref(),
         larger.upcast_ref(),
         rotate.upcast_ref(),
+        bottom_pin.upcast_ref(),
     ] {
         controls.append(widget);
     }
@@ -1141,7 +1200,6 @@ fn build(
     animation_controls.append(&frame_target);
     animation_controls.append(&frame_jump);
     toolbar.append(&animation_controls);
-    root.append(&toolbar);
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&scroll));
     let metadata_label = gtk::Label::new(None);
@@ -1170,7 +1228,7 @@ fn build(
     metadata_panel.add_css_class("metadata-overlay");
     let css = gtk::CssProvider::new();
     css.load_from_data(
-        ".metadata-overlay { background: rgba(20,20,20,0.86); color: white; border-radius: 8px; }",
+        ".metadata-overlay, .reader-bar { background: rgba(20,20,20,0.86); color: white; border-radius: 10px; } .reader-bar { padding: 8px; }",
     );
     gtk::style_context_add_provider_for_display(
         &gtk::prelude::WidgetExt::display(&window),
@@ -1178,8 +1236,15 @@ fn build(
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
     overlay.add_overlay(&metadata_panel);
-    root.append(&overlay);
-    window.set_child(Some(&root));
+    for (bar, align) in [(&header, gtk::Align::Start), (&toolbar, gtk::Align::End)] {
+        bar.set_halign(gtk::Align::Center);
+        bar.set_valign(align);
+        bar.add_css_class("reader-bar");
+        overlay.add_overlay(bar);
+    }
+    header.set_margin_top(8);
+    window.set_size_request(760, 240);
+    window.set_child(Some(&overlay));
     let ui = Rc::new(Ui {
         metadata: RefCell::new(ncat_presentation::metadata::MetadataOverlay::default()),
         metadata_label,
@@ -1187,7 +1252,9 @@ fn build(
         window,
         header,
         toolbar,
-        interface_visible: Cell::new(true),
+        bars: Cell::new(ReaderBars::default()),
+        top_pin,
+        bottom_pin,
         interface_input: Cell::new(false),
         drop_generation: Cell::new(None),
         network_request: Cell::new(0),
@@ -1231,6 +1298,44 @@ fn build(
     });
     ui.update_navigation();
     ui.update_playback();
+    ui.update_interface();
+    for (bar, button) in [(Bar::Top, &ui.top_pin), (Bar::Bottom, &ui.bottom_pin)] {
+        let weak = Rc::downgrade(&ui);
+        button.connect_clicked(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                let mut bars = ui.bars.get();
+                bars.toggle_pin(bar);
+                ui.bars.set(bars);
+                ui.update_interface();
+            }
+        });
+    }
+    {
+        let motion = gtk::EventControllerMotion::new();
+        motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&ui);
+        motion.connect_motion(move |controller, _, y| {
+            if let Some(ui) = weak.upgrade() {
+                ui.point_bars(
+                    Some(y as i32),
+                    controller.widget().map_or(0, |w| w.height()),
+                );
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        motion.connect_leave(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.point_bars(None, 0);
+            }
+        });
+        overlay.add_controller(motion);
+        let weak = Rc::downgrade(&ui);
+        ui.window.connect_focus_widget_notify(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.update_interface();
+            }
+        });
+    }
     if ui.smoke_controls {
         for button in [&ui.frame_previous, &ui.frame_next] {
             let weak = Rc::downgrade(&ui);
@@ -1466,10 +1571,10 @@ fn build(
                     }
                 }
                 Command::ToggleInterface => {
-                    if !ui.window.is_fullscreen() {
-                        ui.interface_visible.set(!ui.interface_visible.get());
-                        ui.update_interface();
-                    }
+                    let mut bars = ui.bars.get();
+                    bars.toggle_both();
+                    ui.bars.set(bars);
+                    ui.update_interface();
                 }
                 Command::Page(key) => {
                     ui.focus_viewer();
@@ -1867,18 +1972,6 @@ mod tests {
                 .unwrap(),
             path
         );
-    }
-
-    #[test]
-    fn fullscreen_always_hides_interface() {
-        assert!(!interface_shown(true, true));
-        assert!(!interface_shown(false, true));
-    }
-
-    #[test]
-    fn windowed_interface_respects_toggle() {
-        assert!(interface_shown(true, false));
-        assert!(!interface_shown(false, false));
     }
 
     #[test]

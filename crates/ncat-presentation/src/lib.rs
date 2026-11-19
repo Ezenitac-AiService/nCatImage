@@ -5,10 +5,7 @@ use ncat_core::{Direction, fit_size, physical_next};
 pub mod input;
 pub mod metadata;
 pub mod playback;
-
-pub fn interface_shown(enabled: bool, fullscreen: bool) -> bool {
-    enabled && !fullscreen
-}
+pub mod reader_bars;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageKey {
@@ -132,13 +129,5 @@ mod tests {
         assert_eq!(view.quarter_turns, 3);
         view.rotate(false);
         assert_eq!(view.quarter_turns, 0);
-    }
-
-    #[test]
-    fn fullscreen_preserves_windowed_preference() {
-        assert!(!interface_shown(true, true));
-        assert!(!interface_shown(false, true));
-        assert!(interface_shown(true, false));
-        assert!(!interface_shown(false, false));
     }
 }

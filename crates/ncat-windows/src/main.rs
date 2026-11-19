@@ -47,10 +47,17 @@ fn main() -> std::process::ExitCode {
         [] => (None, Smoke::None),
         [option] if option == "--smoke-window" => (None, Smoke::Window),
         [option] if option == "--smoke-resize" => (None, Smoke::Resize),
+        [option, path] if option == "--smoke-resize-frame" => {
+            (Some(path.into()), Smoke::ResizeFrame)
+        }
         [option] if option == "--smoke-metadata-window" => (None, Smoke::MetadataWindow),
+        [option, path] if option == "--smoke-metadata-window" => {
+            (Some(path.into()), Smoke::MetadataFrame)
+        }
         [option, path] if option == "--smoke-frame" => (Some(path.into()), Smoke::Frame),
         [option, path] if option == "--smoke-animation" => (Some(path.into()), Smoke::Animation),
         [option, path] if option == "--smoke-navigation" => (Some(path.into()), Smoke::Navigation),
+        [option, path] if option == "--smoke-modal-load" => (Some(path.into()), Smoke::ModalLoad),
         [path] if !path.as_encoded_bytes().starts_with(b"--") => (Some(path.into()), Smoke::None),
         _ => return ExitCode::from(2),
     };

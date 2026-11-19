@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Native Windows same-EXE containment/pipeline/GUI checks, using generated fixtures only."""
 import argparse
+import binascii
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -24,6 +26,10 @@ def main():
     shutil.copy2(args.image.resolve(), image)
     fixture = work / "fixtures 한글"
     subprocess.run([sys.executable, str(Path(__file__).with_name("smoke-fixtures.py")), str(fixture)], check=True)
+    png = (fixture / "page1.png").read_bytes()
+    text = b"tEXtTitle\0<literal> metadata smoke"
+    chunk = struct.pack(">I", len(text) - 4) + text + struct.pack(">I", binascii.crc32(text))
+    (fixture / "metadata.png").write_bytes(png[:33] + chunk + png[33:])
     # Own two-color/two-frame looping 1x1 GIF; no fixture downloads.
     gif = bytearray(b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\x00\x00\x00\xff\x00")
     gif.extend(b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00")
@@ -39,12 +45,15 @@ def main():
         (["--self-test"], 0), (["--worker"], 2),
         (["--smoke-window"], 0),
         (["--smoke-resize"], 0),
+        (["--smoke-resize-frame", str(fixture / "page1.png")], 0),
         (["--smoke-metadata-window"], 0),
+        (["--smoke-metadata-window", str(fixture / "metadata.png")], 0),
         (["--smoke-pipeline", str(fixture / "page1.png")], 0),
         (["--smoke-pipeline", str(fixture / "sample.cbz")], 0),
         (["--smoke-frame", str(fixture / "sample.cbz")], 0),
         (["--smoke-animation", str(fixture / "animation.gif")], 0),
         (["--smoke-navigation", str(fixture / "sample.cbz")], 0),
+        (["--smoke-modal-load", str(fixture / "sample.cbz")], 0),
     ]
     print(f"Native Windows results: {work}", flush=True)
     for index, (arguments, expected) in enumerate(cases):

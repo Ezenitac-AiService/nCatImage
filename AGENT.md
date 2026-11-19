@@ -1,6 +1,6 @@
 # nCatImage 개발 지침
 
-기준: v0.5.4 · 2026-11-19. OpenCode 코딩 에이전트를 통한 AI 기반 개발이며, 실제 실행한 검사와 미검증 범위를 구분해 보고한다. 사용자가 모든 개발 문서·테스트 코드 공개를 요청했으며, 개인정보·원본 입력·진단 로그·빌드 산출물은 소스 커밋에 넣지 않는다.
+기준: v0.5.5 · 2026-11-19. OpenCode 코딩 에이전트를 통한 AI 기반 개발이며, 실제 실행한 검사와 미검증 범위를 구분해 보고한다. 사용자가 모든 개발 문서·테스트 코드 공개를 요청했으며, 개인정보·원본 입력·진단 로그·빌드 산출물은 소스 커밋에 넣지 않는다.
 
 ## 목적과 범위
 
@@ -9,6 +9,7 @@
 - 사용자 구현 요청에 따라 Cargo workspace와 Linux M1 개발판을 추가했다. 현재 범위는 [구현 상태](doc/08-implementation-status.md)가 기준이며 M0 전체/MVP 완료로 보고하지 않는다.
 - 개발/실행 검증은 Linux x64 우선이다. Windows/macOS 포팅·배포 파이프라인을 준비하되 native 파일/보호 미구현 OS는 readiness gate에서 차단한다. 실제 세 OS 배포 완료로 표시하지 않는다. Android는 UX 참고 대상이다.
 - Windows의 최종 목표는 DLL 추출 없는 단일 EXE + 동일 EXE의 별도 worker다. Win32 셸과 격리된 Wine prefix로 단계적으로 개발하며 [11](doc/11-windows-single-exe-wine.md)을 따른다. native 보호 미완료 때 decoder fallback을 허용하지 않는다.
+- Windows 로컬 빌드는 WSL에 설치된 Rust와 Linux용 llvm-mingw로 교차 빌드한다. Cargo 중간 산출물은 WSL 파일시스템에 두고, 검증된 EXE는 저장소의 `target/windows-single/`에 둔다. native Windows 실행 검증과는 별개다.
 - v0.5.2는 사용자 승인으로 native Windows **미시험 UNTESTED 실험판**을 별도 release asset에 포함한다. 정식 Windows readiness는 false로 유지하며, 실험판 공개를 native 검증 통과로 계산하지 않는다.
 - 이 파일명은 `AGENT.md`다. `AGENTS.md`만 읽는 도구는 명시적으로 이 문서를 읽도록 설정한다.
 
