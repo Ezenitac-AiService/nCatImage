@@ -61,6 +61,7 @@ struct Ui {
     syncing: Cell<bool>,
     closing: Cell<bool>,
     reload_timer: RefCell<Option<glib::SourceId>>,
+    page_loading: Cell<bool>,
     loading_timer: RefCell<Option<glib::SourceId>>,
     animation_timer: RefCell<Option<glib::SourceId>>,
     animation_view: Cell<View>,
@@ -493,8 +494,6 @@ impl Ui {
                 if let Some(ui) = weak.upgrade() {
                     ui.loading_timer.borrow_mut().take();
                     if !ui.closing.get() && ui.backend.generation() == generation {
-                        ui.picture.set_paintable(gdk::Paintable::NONE);
-                        ui.clear_metadata();
                         ui.set_status("페이지를 읽는 중…");
                     }
                 }
@@ -551,6 +550,7 @@ impl Ui {
                 .diagnose_drop(DropEvent::Superseded { generation });
         }
         self.backend.cancel();
+        self.page_loading.set(false);
         let request = self.network_request.get();
         self.backend
             .diagnose_drop(DropEvent::NetworkResolving { request, protocol });
@@ -607,6 +607,7 @@ impl Ui {
 
     fn open_source(self: &Rc<Self>, path: PathBuf, from_drop: bool) {
         self.cancel_network();
+        self.page_loading.set(false);
         if let Some(generation) = self.drop_generation.take() {
             self.backend
                 .diagnose_drop(DropEvent::Superseded { generation });
@@ -622,6 +623,7 @@ impl Ui {
         self.animation_view.set(self.view());
         match self.backend.open(path, self.animation_view.get()) {
             Ok(generation) => {
+                self.page_loading.set(true);
                 if from_drop {
                     self.drop_generation.set(Some(generation));
                     self.backend
@@ -653,6 +655,10 @@ impl Ui {
     }
 
     fn load(self: &Rc<Self>, index: usize) {
+        if self.page_loading.get() {
+            self.update_navigation();
+            return;
+        }
         self.cancel_network();
         self.cancel_reload();
         let book = self.book.borrow().clone();
@@ -663,18 +669,21 @@ impl Ui {
             self.reset_playback(index != self.selected.get());
             self.selected.set(index);
             self.animation_view.set(self.view());
-            if self
-                .backend
-                .load(book, index, self.animation_view.get())
-                .is_ok()
-            {
-                self.loading();
+            match self.backend.load(book, index, self.animation_view.get()) {
+                Ok(_) => {
+                    self.page_loading.set(true);
+                    self.loading();
+                }
+                Err(code) => self.set_status(&code.to_string()),
             }
             self.update_navigation();
         }
     }
 
     fn navigate(self: &Rc<Self>, forward: bool) {
+        if self.page_loading.get() {
+            return;
+        }
         let len = self
             .book
             .borrow()
@@ -769,7 +778,7 @@ impl Ui {
     }
 
     fn change_zoom(self: &Rc<Self>, factor: f64) {
-        if self.book.borrow().is_none() {
+        if self.page_loading.get() || self.book.borrow().is_none() {
             return;
         }
         let mut state = self.reader_view.get();
@@ -791,6 +800,9 @@ impl Ui {
     }
 
     fn rotate(self: &Rc<Self>, backwards: bool) {
+        if self.page_loading.get() {
+            return;
+        }
         let mut state = self.reader_view.get();
         state.rotate(backwards);
         self.reader_view.set(state);
@@ -934,6 +946,7 @@ impl Ui {
                 );
                 // GBytes owns FrameBytes, so the reservation survives the GUI's local variables.
                 self.picture.set_paintable(Some(&texture));
+                self.page_loading.set(false);
                 if let Some(generation) = self.drop_generation.take() {
                     self.backend
                         .diagnose_drop(DropEvent::Displayed { generation });
@@ -1007,6 +1020,7 @@ impl Ui {
                 }
             }
             Event::Error { code, .. } => {
+                self.page_loading.set(false);
                 self.reset_playback(true);
                 if let Some(timer) = self.animation_timer.borrow_mut().take() {
                     timer.remove();
@@ -1065,15 +1079,22 @@ impl Ui {
                 return glib::ControlFlow::Break;
             }
             let remaining = ui.smoke_steps.get().unwrap_or(0);
-            if remaining == 0 {
-                return glib::ControlFlow::Break;
+            if ui.page_loading.get() {
+                return glib::ControlFlow::Continue;
             }
             let len = ui.book.borrow().as_ref().map_or(0, |book| book.pages.len());
             if len == 0 {
                 return glib::ControlFlow::Continue;
             }
             ui.smoke_steps.set(Some(remaining - 1));
-            ui.load((ui.selected.get() + 1) % len);
+            let index = (ui.selected.get() + 1) % len;
+            ui.load(index);
+            assert!(ui.page_loading.get());
+            let generation = ui.backend.generation();
+            ui.navigate(true);
+            ui.navigate(false);
+            assert_eq!(ui.selected.get(), index);
+            assert_eq!(ui.backend.generation(), generation);
             if remaining == 1 {
                 glib::ControlFlow::Break
             } else {
@@ -1189,6 +1210,7 @@ fn build(
         .child(&picture)
         .build();
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
+    scroll.add_css_class("reader-scroll");
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let previous = icon_button("←", "이전 페이지");
     let next = icon_button("→", "다음 페이지");
@@ -1281,7 +1303,8 @@ fn build(
          .reader-bar button:active { background: rgba(173,197,233,0.36); }
          .reader-bar button.info-active { background: rgba(115,175,248,0.35); border-color: rgba(173,208,255,0.65); }
          .reader-bar button:disabled { color: #9aa5bb; }
-         .metadata-overlay viewport { background: transparent; }",
+         .metadata-overlay viewport { background: transparent; }
+         .reader-scroll scrollbar slider, .metadata-overlay scrollbar slider { margin: 0; }",
     );
     gtk::style_context_add_provider_for_display(
         &gtk::prelude::WidgetExt::display(&window),
@@ -1350,6 +1373,7 @@ fn build(
         syncing: Cell::new(false),
         closing: Cell::new(false),
         reload_timer: RefCell::new(None),
+        page_loading: Cell::new(false),
         loading_timer: RefCell::new(None),
         animation_timer: RefCell::new(None),
         animation_view: Cell::new(View::default()),

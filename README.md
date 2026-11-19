@@ -4,11 +4,15 @@
 
 폴더와 ZIP/CBZ를 바로 열어 이미지를 감상하는 Linux용 뷰어입니다. 로컬 파일과 OS가 연결하는 SMB·FTP·SFTP 네트워크 폴더를 읽을 수 있습니다. 원본 파일을 변경하지 않으며, 자동 원격 분석이나 감상 기록 저장 없이 동작합니다.
 
-> **v0.5.5 · Windows 개발 프리뷰** — 창 크기 변경 시의 플로팅 바 배치를 수정했습니다. Windows 실사용·보안 검증은 미완료이며, 새 Linux 패키지는 이 버전에서 제공하지 않습니다.
-
-> 현재 소스의 서리 유리 UI·세 조작부·오른쪽 메타데이터는 **아직 릴리스하지 않은 변경**입니다. 다운로드 가능한 v0.5.5 Windows 및 v0.5.4 Linux 파일에는 이 변경이 포함되지 않습니다. [Linux 릴리스 전 확인 항목](doc/14-reader-control-layout.md#linux-릴리스-전-확인)
+> **v0.6.0 개발 프리뷰** — Linux x64 AppImage와 미서명 Windows x64 `UNTESTED` 단일 EXE. Windows 네이티브 검증과 정식 제품 배포는 미완료입니다.
 
 **이 프로젝트는 OpenCode 코딩 에이전트(Coding Agent)를 통한 AI 기반 개발 프로젝트입니다.** 설계·구현·테스트·문서에 AI가 생성하거나 수정한 내용이 포함되어 있습니다. 자동 검사 통과가 안전성·정확성·성능을 보장하는 것은 아니며, 실제 검증 범위와 남은 제한을 공개합니다.
+
+### v0.6.0 변경 사항
+
+- 페이지를 읽는 중에는 기존 이미지를 유지하고 추가 이동 입력을 무시합니다. 오류가 나면 자동으로 건너뛰지 않으며 다음 입력으로 다시 이동할 수 있습니다.
+- 서리 유리 조작부를 상단·왼쪽 아래·오른쪽 아래에 배치하고 메타데이터 패널을 오른쪽 위로 옮겼습니다. 우클릭으로 파일·폴더·주소 열기 메뉴를, `[`/`]`로 같은 위치의 이전·다음 책을 열 수 있습니다.
+- Linux 데스크톱 회귀 테스트를 새 창 제목과 오버레이 동작에 맞췄으며 Breeze 계열의 스크롤바 크기 경고를 수정했습니다.
 
 ### v0.5.5 변경 사항
 
@@ -57,16 +61,16 @@
 
 ## 다운로드 및 실행
 
-[**Windows x64 v0.5.5 프리뷰**](https://github.com/NyarCat/nCatImage/releases/tag/v0.5.5) · [**Linux x64 v0.5.4 AppImage**](https://github.com/NyarCat/nCatImage/releases/tag/v0.5.4)
+[**v0.6.0 다운로드 — Linux AppImage · Windows UNTESTED EXE**](https://github.com/NyarCat/nCatImage/releases/tag/v0.6.0)
 
-Windows는 `nCatImage-0.5.5-windows-x86_64.exe`입니다. 미서명 개발 프리뷰이며 정식 지원이나 보안 인증을 의미하지 않습니다. 업데이트하려면 실행 중인 앱을 종료한 뒤 EXE를 교체하세요.
+Windows는 `nCatImage-0.6.0-UNTESTED-windows-x86_64.exe`입니다. 미서명 개발 프리뷰이며 네이티브 CI의 `private owner/DACL required` 오류는 해결되지 않았습니다.
 
 GTK와 이미지 처리 worker를 포함한 **AppImage 파일 하나**로 배포합니다. Rust나 GTK 개발 패키지를 따로 설치할 필요가 없습니다.
 
 ```bash
-chmod +x nCatImage-0.5.4-x86_64.AppImage
-./nCatImage-0.5.4-x86_64.AppImage
-./nCatImage-0.5.4-x86_64.AppImage /path/to/book.cbz
+chmod +x nCatImage-0.6.0-x86_64.AppImage
+./nCatImage-0.6.0-x86_64.AppImage
+./nCatImage-0.6.0-x86_64.AppImage /path/to/book.cbz
 ```
 
 - 대상: **Linux x86_64, glibc 2.39 이상**(Ubuntu 24.04 및 동급 이상 환경).

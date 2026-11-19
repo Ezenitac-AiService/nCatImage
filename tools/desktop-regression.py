@@ -73,14 +73,10 @@ def main():
 
     def click_spin(win):
         spin = showing("spin button")[0]
-        controls = spin.parent
-        group_width = controls.queryComponent().getExtents(pyatspi.DESKTOP_COORDS).width
-        previous_width = controls[0].queryComponent().getExtents(pyatspi.DESKTOP_COORDS).width
-        geometry = dict(line.split("=", 1) for line in command("xdotool", "getwindowgeometry", "--shell", win).splitlines())
-        # Sizes work even where GTK's screen origins do not. Account for CJK
-        # fallback font widths rather than hardcoding the spin's x position.
-        x = (int(geometry["WIDTH"]) - group_width) // 2 + previous_width + 8 + 20
-        click(win, x, 100)
+        # Window-relative AT-SPI coordinates avoid GTK's unsupported screen
+        # origins and account for client-side decorations and font metrics.
+        bounds = spin.queryComponent().getExtents(pyatspi.WINDOW_COORDS)
+        click(win, bounds.x + bounds.width // 3, bounds.y + bounds.height // 2)
 
     def launch(label, uri=None, smoke=False):
         directory = work / label
@@ -120,7 +116,7 @@ def main():
         win = window()
         activate(win)
         def page(number):
-            wait(lambda: command("xdotool", "getwindowname", win).startswith(f"{number} / 3"), f"page {number}")
+            wait(lambda: command("xdotool", "getwindowname", win).startswith(f"{number}/3 · "), f"page {number}")
         page(1)
         wait(lambda: showing("spin button"), "accessible controls")
         for press, target in [("Down", 2), ("Up", 1), ("space", 2), ("BackSpace", 1), ("Next", 2), ("Prior", 1), ("Tab", 1), ("Down", 2), ("Up", 1)]:
@@ -140,29 +136,53 @@ def main():
         click(win, 500, 450)
         key("Up")
         page(2)
-        normal_height = showing("scroll pane")[0].queryComponent().getExtents(pyatspi.DESKTOP_COORDS).height
+        def image_size():
+            extent = showing("scroll pane")[0].queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            return extent.width, extent.height
+
+        normal_size = image_size()
         key("grave")
-        wait(lambda: not showing("spin button"), "hide interface")
-        assert showing("scroll pane")[0].queryComponent().getExtents(pyatspi.DESKTOP_COORDS).height > normal_height
+        wait(lambda: not showing("spin button"), "unpin interface")
+        assert image_size() == normal_size, "overlays must not resize the image area"
         key("grave")
-        wait(lambda: showing("spin button"), "restore interface")
+        wait(lambda: showing("spin button"), "pin interface")
+
+        def fullscreen():
+            return "_NET_WM_STATE_FULLSCREEN" in command("xprop", "-id", win, "_NET_WM_STATE")
+
         key("F11")
-        wait(lambda: not showing("spin button"), "fullscreen")
+        wait(fullscreen, "fullscreen")
+        assert showing("spin button"), "pinned controls remain visible in fullscreen"
         key("grave")
-        assert not showing("spin button")
+        wait(lambda: not showing("spin button"), "unpin in fullscreen")
         key("F11")
-        wait(lambda: showing("spin button"), "windowed restore")
+        wait(lambda: not fullscreen(), "windowed restore")
+        assert not showing("spin button"), "unpinned controls stay unpinned after fullscreen"
         key("grave")
-        key("F11")
-        key("F11")
-        assert not showing("spin button")
-        key("grave")
-        wait(lambda: showing("spin button"), "show interface")
+        wait(lambda: showing("spin button"), "pin again")
         click_spin(win)
         key("Escape")
         wait(lambda: app.poll() is not None, "exit while editing")
         assert app.returncode == 0
         print("PASS keyboard, explicit focus, top UI visibility and fullscreen restoration")
+
+        damaged = work / "damaged-pages"
+        damaged.mkdir()
+        valid_image = inputs["last"].read_bytes()
+        (damaged / "page1.png").write_bytes(valid_image)
+        (damaged / "page2.png").write_bytes(valid_image[:24])
+        (damaged / "page3.png").write_bytes(valid_image)
+        app, directory = launch("damaged-page", damaged)
+        win = window()
+        activate(win)
+        wait(lambda: "1/3 · page1.png · Png" in command("xdotool", "getwindowname", win), "first image")
+        key("Down")
+        wait(lambda: "2/3 · page2.png · 손상" in command("xdotool", "getwindowname", win), "page error")
+        key("Down")
+        wait(lambda: "3/3 · page3.png · Png" in command("xdotool", "getwindowname", win), "page after error")
+        key("Escape")
+        wait(lambda: app.poll() is not None, "exit after page error")
+        print("PASS page error unlocks manual navigation")
 
         source = Gtk.Window(title="NCAT_DRAG_SOURCE")
         source.set_default_size(250, 200)

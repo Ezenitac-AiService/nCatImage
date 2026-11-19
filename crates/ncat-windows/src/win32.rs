@@ -239,6 +239,7 @@ struct App {
     book: Option<Arc<Book>>,
     frame: Option<Display>,
     selected: usize,
+    page_loading: bool,
     status: String,
     last_title: RefCell<String>,
     reader: ReaderView,
@@ -340,6 +341,7 @@ impl App {
                 book: None,
                 frame: None,
                 selected: 0,
+                page_loading: false,
                 status: "우클릭: 열기".into(),
                 last_title: RefCell::new(String::new()),
                 reader: ReaderView::default(),
@@ -1050,6 +1052,7 @@ impl App {
         unsafe {
             self.cancel_view_refresh();
             self.reset(true);
+            self.page_loading = false;
             self.book = None;
             self.frame = None;
             self.metadata.clear();
@@ -1061,6 +1064,7 @@ impl App {
             if let Err(code) = self.backend.open(path, self.animation_view) {
                 self.set_status(&code.to_string());
             } else {
+                self.page_loading = true;
                 self.set_status("읽는 중…");
             }
             self.navigation_ui();
@@ -1071,6 +1075,9 @@ impl App {
     }
     unsafe fn load(&mut self, index: usize) {
         unsafe {
+            if self.page_loading {
+                return;
+            }
             let Some(book) = self
                 .book
                 .clone()
@@ -1082,14 +1089,21 @@ impl App {
             self.reset(index != self.selected);
             self.selected = index;
             self.animation_view = self.view();
-            if self.backend.load(book, index, self.animation_view).is_ok() {
-                self.set_status("읽는 중…");
+            match self.backend.load(book, index, self.animation_view) {
+                Ok(_) => {
+                    self.page_loading = true;
+                    self.set_status("읽는 중…");
+                }
+                Err(code) => self.set_status(&code.to_string()),
             }
             self.navigation_ui();
         }
     }
     unsafe fn navigate(&mut self, forward: bool) {
         unsafe {
+            if self.page_loading {
+                return;
+            }
             let len = self
                 .book
                 .as_ref()
@@ -1282,6 +1296,10 @@ impl App {
                         frame,
                         bgra: pixels,
                     });
+                    if std::mem::take(&mut self.page_loading) && self.view() != self.animation_view
+                    {
+                        self.queue_view_refresh();
+                    }
                     self.refresh_glass();
                     self.playback_ui();
                     if matches!(self.smoke, Smoke::Frame | Smoke::Animation)
@@ -1323,6 +1341,7 @@ impl App {
                     }
                 }
                 Event::Error { code, .. } => {
+                    self.page_loading = false;
                     self.reset(true);
                     self.frame = None;
                     self.metadata.clear();
@@ -1355,7 +1374,7 @@ impl App {
                 eprintln!("nested pump did not receive page result");
                 self.close();
             }
-            if self.smoke == Smoke::Navigation && self.frame.is_some() {
+            if self.smoke == Smoke::Navigation && self.frame.is_some() && !self.page_loading {
                 let len = self
                     .book
                     .as_ref()
@@ -1364,7 +1383,20 @@ impl App {
                 if len > 0 {
                     if self.navigation_left > 0 {
                         self.navigation_left -= 1;
-                        self.load((self.selected + 1) % len);
+                        let index = (self.selected + 1) % len;
+                        self.load(index);
+                        let generation = self.backend.generation();
+                        self.navigate(true);
+                        self.navigate(false);
+                        if !self.page_loading
+                            || self.selected != index
+                            || self.backend.generation() != generation
+                        {
+                            eprintln!(
+                                "nCatImage: navigation accepted input before the page loaded"
+                            );
+                            self.close();
+                        }
                     } else {
                         self.success = true;
                         self.close();
@@ -1434,8 +1466,10 @@ impl App {
                 FIT => self.zoom(0.0),
                 LARGER => self.zoom(1.25),
                 ROTATE => {
-                    self.reader.rotate(false);
-                    self.load(self.selected);
+                    if !self.page_loading {
+                        self.reader.rotate(false);
+                        self.load(self.selected);
+                    }
                 }
                 FULLSCREEN => self.fullscreen(),
                 FRAME_PREVIOUS => self.step(false),
@@ -1548,8 +1582,10 @@ impl App {
                 Command::ZoomOut => self.zoom(1.0 / 1.25),
                 Command::Fit => self.zoom(0.0),
                 Command::Rotate { backwards } => {
-                    self.reader.rotate(backwards);
-                    self.load(self.selected);
+                    if !self.page_loading {
+                        self.reader.rotate(backwards);
+                        self.load(self.selected);
+                    }
                 }
                 Command::Direction => self.command(DIRECTION, 0),
                 Command::Reload => {
