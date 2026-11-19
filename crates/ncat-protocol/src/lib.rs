@@ -29,6 +29,23 @@ pub const MIN_FRAME_DELAY_MS: u32 = 10;
 pub const MAX_FRAME_DELAY_MS: u32 = 60_000;
 pub const MAX_MESSAGE: usize = 256 * 1024;
 pub const MAX_ENTRIES: usize = 100_000;
+
+/// Filename hint only; the protected decoder still verifies the contents.
+pub fn image_filename_hint(name: &[u8]) -> bool {
+    let ext = name.rsplit(|c| *c == b'.').next().unwrap_or_default();
+    [
+        b"jpg".as_slice(),
+        b"jpeg",
+        b"png",
+        b"apng",
+        b"bmp",
+        b"gif",
+        b"agif",
+        b"webp",
+    ]
+    .iter()
+    .any(|hint| ext.eq_ignore_ascii_case(hint))
+}
 pub const INDEX_BYTES: u64 = 24 * 1024 * 1024;
 pub const MAX_INPUT: u64 = 512 * 1024 * 1024;
 pub const MAX_OUTPUT: u64 = 8 * 1024 * 1024;

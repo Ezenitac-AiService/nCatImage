@@ -77,6 +77,41 @@ fn configured(cache_bytes: u64, prefetch: bool) -> Backend {
 }
 
 #[test]
+fn book_neighbor_lookup_preserves_current_generation_and_opens_mixed_siblings() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("책 2");
+    let next = root.path().join("책 10.cbz");
+    fs::create_dir(&folder).unwrap();
+    let page = folder.join("page.png");
+    png(&page, 10, 20);
+    let mut archive = zip::ZipWriter::new(File::create(&next).unwrap());
+    archive
+        .start_file("archived.png", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    archive.write_all(&fs::read(&page).unwrap()).unwrap();
+    archive.finish().unwrap();
+    let backend = configured(0, false);
+    let generation = backend.open(&page, View::default()).unwrap();
+    let current = catalog(&backend);
+    backend.find_neighbor(current, true);
+    let neighbor = loop {
+        if let Event::Neighbor {
+            request, result, ..
+        } = event(&backend)
+        {
+            assert!(backend.neighbor_is_current(request));
+            break result.unwrap().unwrap();
+        }
+    };
+    assert_eq!(backend.generation(), generation);
+    assert_eq!(neighbor.file_name(), next.file_name());
+    backend.open(neighbor, View::default()).unwrap();
+    assert_eq!(catalog(&backend).pages[0].name, "archived.png");
+    assert_eq!(frame(&backend).info.original_width, 10);
+    closed(&backend);
+}
+
+#[test]
 fn configured_deadline_kills_hanging_worker_and_releases_reservations() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("hang");

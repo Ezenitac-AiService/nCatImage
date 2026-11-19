@@ -2,6 +2,7 @@
 
 mod cache;
 mod diagnostics;
+mod neighbors;
 mod options;
 mod worker_command;
 use cache::{FrameCache, Key, Revision, Target};
@@ -13,8 +14,8 @@ pub use worker_command::WorkerCommand;
 
 use ncat_core::{Budget, DEFAULT_BUDGET, MIB, Permit};
 use ncat_protocol::{
-    Envelope, ErrorCode, FrameInfo, INDEX_BYTES, MAX_ENTRIES, MAX_OUTPUT, Page, RawPath, Request,
-    Response, read_message, write_message,
+    Envelope, ErrorCode, FrameInfo, INDEX_BYTES, MAX_ENTRIES, MAX_OUTPUT, Page, PageKey, RawPath,
+    Request, Response, read_message, write_message,
 };
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom};
@@ -80,6 +81,11 @@ impl AsRef<[u8]> for FrameBytes {
 
 #[derive(Debug)]
 pub enum Event {
+    Neighbor {
+        generation: u64,
+        request: u64,
+        result: Result<Option<PathBuf>, ErrorCode>,
+    },
     Catalog {
         generation: u64,
         book: Arc<Book>,
@@ -101,6 +107,7 @@ impl Event {
     pub fn generation(&self) -> u64 {
         match self {
             Self::Catalog { generation, .. }
+            | Self::Neighbor { generation, .. }
             | Self::Frame { generation, .. }
             | Self::Error { generation, .. } => *generation,
             Self::AnimationEnded { generation } => *generation,
@@ -129,8 +136,15 @@ struct Job {
     generation: u64,
     task: Task,
 }
+struct Neighbor {
+    request: u64,
+    book: Arc<Book>,
+    forward: bool,
+}
 struct Shared {
     pending: Mutex<Option<Job>>,
+    neighbor: Mutex<Option<Neighbor>>,
+    neighbor_request: AtomicU64,
     drop_diagnostics: Mutex<VecDeque<DropEvent>>,
     wake: Condvar,
     generation: AtomicU64,
@@ -263,6 +277,8 @@ impl Backend {
         let options = options.validate()?;
         let shared = Arc::new(Shared {
             pending: Mutex::new(None),
+            neighbor: Mutex::new(None),
+            neighbor_request: AtomicU64::new(0),
             drop_diagnostics: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             generation: AtomicU64::new(0),
@@ -291,10 +307,37 @@ impl Backend {
         Ok(generation)
     }
     pub fn open(&self, path: impl Into<PathBuf>, view: View) -> Result<u64, ErrorCode> {
+        self.cancel_neighbor();
         self.submit(Task::Open {
             path: path.into(),
             view,
         })
+    }
+    pub fn find_neighbor(&self, book: Arc<Book>, forward: bool) {
+        let _pending = self.shared.pending.lock().unwrap();
+        let request = self.shared.neighbor_request.fetch_add(1, Ordering::AcqRel) + 1;
+        *self.shared.neighbor.lock().unwrap() = Some(Neighbor {
+            request,
+            book,
+            forward,
+        });
+        self.shared.wake.notify_one();
+    }
+
+    pub fn neighbor_is_current(&self, request: u64) -> bool {
+        self.shared.neighbor_request.load(Ordering::Acquire) == request
+    }
+    pub fn accepts(&self, event: &Event) -> bool {
+        match event {
+            Event::Neighbor { request, .. } => self.neighbor_is_current(*request),
+            _ => event.generation() == self.generation(),
+        }
+    }
+
+    pub fn cancel_neighbor(&self) {
+        let mut neighbor = self.shared.neighbor.lock().unwrap();
+        self.shared.neighbor_request.fetch_add(1, Ordering::AcqRel);
+        *neighbor = None;
     }
     pub fn load(&self, book: Arc<Book>, index: usize, view: View) -> Result<u64, ErrorCode> {
         if index >= book.pages.len() {
@@ -341,6 +384,7 @@ impl Backend {
     }
     /// Invalidate work while the GUI asynchronously resolves a new source.
     pub fn cancel(&self) {
+        self.cancel_neighbor();
         let mut pending = self.shared.pending.lock().unwrap();
         if !self.shared.closing.load(Ordering::Acquire) {
             self.shared.generation.fetch_add(1, Ordering::AcqRel);
@@ -1316,6 +1360,7 @@ fn coordinator(
     let mut prefetch = None;
     enum Work {
         Foreground(Job),
+        Neighbor(Neighbor),
         Prefetch(PrefetchPlan),
         Diagnostics(VecDeque<DropEvent>),
         StopAnimation,
@@ -1334,6 +1379,9 @@ fn coordinator(
                 }
                 if let Some(job) = pending.take() {
                     break Some(Work::Foreground(job));
+                }
+                if let Some(neighbor) = shared.neighbor.lock().unwrap().take() {
+                    break Some(Work::Neighbor(neighbor));
                 }
                 if engine.worker.as_ref().is_some_and(|w| {
                     w.animation_workspace.is_some() && !current(&shared, w.animation_generation)
@@ -1360,6 +1408,29 @@ fn coordinator(
                 engine.diagnostics.incident();
             }
             Some(Work::Prefetch(plan)) => engine.prefetch(plan, &shared),
+            Some(Work::Neighbor(Neighbor {
+                request,
+                book,
+                forward,
+            })) => {
+                let current_request = || {
+                    !shared.closing.load(Ordering::Acquire)
+                        && shared.neighbor_request.load(Ordering::Acquire) == request
+                };
+                let source = book.source.path();
+                let zip = book.pages.first().map_or_else(
+                    || neighbors::archive_name(&source),
+                    |page| matches!(page.key, PageKey::Zip(_)),
+                );
+                let result = neighbors::find(&source, zip, forward, current_request);
+                if current_request() {
+                    let _ = sender.send_blocking(Event::Neighbor {
+                        generation: shared.generation.load(Ordering::Acquire),
+                        request,
+                        result,
+                    });
+                }
+            }
             Some(Work::Foreground(job)) => {
                 prefetch = None;
                 let generation = job.generation;
@@ -1412,6 +1483,8 @@ mod guard_tests {
         let options = BackendOptions::default();
         Arc::new(Shared {
             pending: Mutex::new(None),
+            neighbor: Mutex::new(None),
+            neighbor_request: AtomicU64::new(0),
             drop_diagnostics: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             generation: AtomicU64::new(1),

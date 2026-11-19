@@ -6,6 +6,8 @@ pub fn key(key: gdk::Key) -> Key {
     match key {
         gdk::Key::comma => Key::FramePrevious,
         gdk::Key::period => Key::FrameNext,
+        gdk::Key::bracketleft => Key::BookPrevious,
+        gdk::Key::bracketright => Key::BookNext,
         gdk::Key::slash => Key::Playback,
         gdk::Key::o | gdk::Key::O => Key::Open,
         gdk::Key::l | gdk::Key::L => Key::Network,

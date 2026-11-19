@@ -4,6 +4,8 @@
 pub enum Key {
     FramePrevious,
     FrameNext,
+    BookPrevious,
+    BookNext,
     Playback,
     Open,
     Network,
@@ -39,6 +41,7 @@ pub struct Modifiers {
 pub enum Command {
     FramePrevious,
     FrameNext,
+    Book { forward: bool },
     Playback,
     Native,
     Block,
@@ -108,6 +111,9 @@ pub fn command(key: Key, modifiers: Modifiers, controls_have_input: bool) -> Com
         K::Right => C::Page(super::PageKey::Right),
         K::First => C::First,
         K::Last => C::Last,
+        K::BookPrevious | K::BookNext if !modifiers.shift => C::Book {
+            forward: key == K::BookNext,
+        },
         K::ZoomIn => C::ZoomIn,
         K::ZoomOut => C::ZoomOut,
         K::Fit => C::Fit,
@@ -123,6 +129,27 @@ pub fn command(key: Key, modifiers: Modifiers, controls_have_input: bool) -> Com
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn brackets_navigate_books_only_when_reading_without_modifiers() {
+        for (key, forward) in [(Key::BookPrevious, false), (Key::BookNext, true)] {
+            assert_eq!(
+                command(key, Modifiers::default(), false),
+                Command::Book { forward }
+            );
+            assert_eq!(command(key, Modifiers::default(), true), Command::Native);
+            assert_eq!(
+                command(
+                    key,
+                    Modifiers {
+                        shift: true,
+                        ..Modifiers::default()
+                    },
+                    false
+                ),
+                Command::Native
+            );
+        }
+    }
     #[test]
     fn tab_never_navigates_controls_and_modified_tab_does_not_toggle() {
         for focused in [false, true] {

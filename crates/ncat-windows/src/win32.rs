@@ -1235,11 +1235,16 @@ impl App {
     }
     unsafe fn consume(&mut self, prepared: Prepared) {
         unsafe {
-            if self.closing.is_some() || prepared.event.generation() != self.backend.generation() {
+            if self.closing.is_some() || !self.backend.accepts(&prepared.event) {
                 return;
             }
             let generation = prepared.event.generation();
             match prepared.event {
+                Event::Neighbor { result, .. } => match result {
+                    Ok(Some(path)) => self.open(path),
+                    Ok(None) => self.set_status("이동할 폴더/압축 파일 없음"),
+                    Err(code) => self.set_status(&code.to_string()),
+                },
                 Event::Catalog { book, .. } => {
                     self.selected = book.selected;
                     self.book = Some(book);
@@ -1474,6 +1479,8 @@ impl App {
             let key = match key as u16 {
                 VK_OEM_COMMA => Key::FramePrevious,
                 VK_OEM_PERIOD => Key::FrameNext,
+                VK_OEM_4 => Key::BookPrevious,
+                VK_OEM_6 => Key::BookNext,
                 VK_OEM_2 => Key::Playback,
                 VK_F11 => Key::Fullscreen,
                 VK_ESCAPE => Key::Escape,
@@ -1526,6 +1533,11 @@ impl App {
                         ncat_core::Direction::LeftToRight
                     },
                 )),
+                Command::Book { forward } => {
+                    if let Some(book) = self.book.clone() {
+                        self.backend.find_neighbor(book, forward);
+                    }
+                }
                 Command::First => self.load(0),
                 Command::Last => {
                     if let Some(book) = &self.book {
@@ -2925,7 +2937,7 @@ pub fn run(initial: Option<PathBuf>, smoke: Smoke) -> io::Result<()> {
                         if stop.load(Ordering::Acquire) {
                             break;
                         }
-                        if event.generation() != backend.generation() {
+                        if !backend.accepts(&event) {
                             continue;
                         }
                         let mut event = stage(event);

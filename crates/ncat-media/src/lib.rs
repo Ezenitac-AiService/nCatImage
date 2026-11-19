@@ -86,21 +86,7 @@ pub struct Book {
     pub deferred: bool,
 }
 
-fn image_hint(name: &[u8]) -> bool {
-    let ext = name.rsplit(|c| *c == b'.').next().unwrap_or_default();
-    [
-        b"jpg".as_slice(),
-        b"jpeg",
-        b"png",
-        b"apng",
-        b"bmp",
-        b"gif",
-        b"agif",
-        b"webp",
-    ]
-    .iter()
-    .any(|x| ext.eq_ignore_ascii_case(x))
-}
+use ncat_protocol::image_filename_hint as image_hint;
 
 fn label(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)

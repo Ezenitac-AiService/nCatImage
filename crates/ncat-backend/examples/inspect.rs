@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut success = false;
     while let Ok(event) = events.recv_blocking() {
         match event {
+            Event::Neighbor { .. } => continue,
             Event::AnimationEnded { .. } => break,
             Event::Catalog { book, .. } => {
                 println!("pages={} complete={}", book.pages.len(), book.complete)

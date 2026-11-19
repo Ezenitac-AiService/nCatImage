@@ -891,10 +891,11 @@ impl Ui {
     }
 
     fn consume(self: &Rc<Self>, event: Event) {
-        if self.closing.get() || event.generation() != self.backend.generation() {
+        if self.closing.get() || !self.backend.accepts(&event) {
             return;
         }
-        if let Some(generation) = self.drop_generation.get()
+        if !matches!(event, Event::Neighbor { .. })
+            && let Some(generation) = self.drop_generation.get()
             && generation != event.generation()
         {
             self.drop_generation.set(None);
@@ -902,6 +903,11 @@ impl Ui {
                 .diagnose_drop(DropEvent::Superseded { generation });
         }
         match event {
+            Event::Neighbor { result, .. } => match result {
+                Ok(Some(path)) => self.open_source(path, false),
+                Ok(None) => self.set_status("이동할 폴더/압축 파일 없음"),
+                Err(code) => self.set_status(&code.to_string()),
+            },
             Event::Catalog { book, .. } => {
                 self.selected.set(book.selected);
                 *self.book.borrow_mut() = Some(book);
@@ -1655,6 +1661,11 @@ fn build(
             match action {
                 Command::FramePrevious => ui.step_frame(false),
                 Command::FrameNext => ui.step_frame(true),
+                Command::Book { forward } => {
+                    if let Some(book) = ui.book.borrow().clone() {
+                        ui.backend.find_neighbor(book, forward);
+                    }
+                }
                 Command::Playback => ui.toggle_playback(),
                 Command::Native => return glib::Propagation::Proceed,
                 Command::Block => {}
